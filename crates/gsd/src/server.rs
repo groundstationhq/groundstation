@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/trajectories", get(list_trajectories))
         .route("/v1/trajectories/{id}", get(get_trajectory))
         .route("/v1/shutdown", post(shutdown))
+        .fallback(crate::ui::serve)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn(move |req, next| {
             check_host(listen, req, next)
@@ -77,6 +78,7 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
     let counts = blocking(move || store.counts()).await?;
     Ok(Json(Health {
         status: "ok".into(),
+        ui: crate::ui::EMBEDDED,
         adapters: s
             .ingestor
             .adapter_names()

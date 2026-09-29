@@ -91,6 +91,8 @@ export const attr = {
 
 export interface Health {
   status: string;
+  /** Whether this daemon serves the UI at `/`. */
+  ui?: boolean;
   /** Adapters this daemon accepts at `/v1/adapters/{name}`. */
   adapters: string[];
   version: string;

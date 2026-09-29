@@ -62,6 +62,12 @@ enum Command {
     },
     /// Show daemon and collection status.
     Status,
+    /// Open the UI in a browser, starting gsd first if needed.
+    Ui {
+        /// Print the URL instead of opening a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// List recent trajectories.
     #[command(alias = "ls")]
     Trajectories {
@@ -298,6 +304,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             action: DaemonAction::Status,
         }
         | Command::Status => block_on(status(&config)),
+        Command::Ui { no_open } => block_on(ui(&config, config_path, no_open)),
         Command::Trajectories { limit, json } => block_on(async {
             let rows = Client::new(&config)?.trajectories(limit).await?;
             if json {
@@ -617,6 +624,37 @@ async fn resync(config: &Config, agent: AgentName) -> Result<ExitCode> {
     })
 }
 
+/// Opens the embedded UI, starting gsd if it isn't running.
+async fn ui(config: &Config, config_path: Option<&Path>, no_open: bool) -> Result<ExitCode> {
+    let client = Client::new(config)?;
+    let health = match client.health().await {
+        Ok(h) => h,
+        Err(_) => {
+            let code = start_daemon(config, config_path).await?;
+            if code != ExitCode::SUCCESS {
+                return Ok(code);
+            }
+            client.health().await?
+        }
+    };
+    let url = format!("{}/", config.base_url());
+    if !health.ui {
+        println!(
+            "gsd {} was built without the UI; the API is up at {url}v1/health.",
+            health.version
+        );
+        println!(
+            "Install a release build (https://groundstation.sh/install) or build ui/ and rebuild gsd."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    println!("Ground Station UI: {url}");
+    if !no_open && let Err(err) = open::that_detached(&url) {
+        println!("couldn't open a browser ({err}); open the URL yourself.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn status(config: &Config) -> Result<ExitCode> {
     let health = match Client::new(config)?.health().await {
         Ok(h) => h,
@@ -642,6 +680,9 @@ async fn status(config: &Config) -> Result<ExitCode> {
         );
     }
     println!("  schema    {}", health.schema);
+    if health.ui {
+        println!("  ui        {}/", config.base_url());
+    }
     println!("  data      {}", render::tilde(&health.data_dir));
     println!(
         "  stored    {} trajectories, {} events",

@@ -112,9 +112,10 @@ Custom / SDK ┘        │
 
 ```sh
 curl -fsSL https://groundstation.sh/install | sh
-groundstation connect claude-code       # or: codex
+groundstation connect claude-code       # or: codex, opencode, pi
 claude                                  # run your agent as usual; the trajectory shows up
-groundstation trajectories
+groundstation trajectories              # in the terminal
+groundstation ui                        # or in the browser: http://127.0.0.1:4318/
 ```
 
 The installer ([`install.sh`](./install.sh)) is POSIX `sh`, never needs root, and only touches your home directory. It detects the platform (macOS arm64/x86_64, Linux x86_64/arm64 as static musl binaries), downloads the matching archive from the GitHub Release, verifies it against `SHA256SUMS`, unpacks it under `~/.local/share/groundstation/releases/`, and links `groundstation` and `gsd` into `~/.local/bin`. Re-running it upgrades or repairs. Knobs: `GROUNDSTATION_VERSION`, `GROUNDSTATION_INSTALL_DIR`, `GROUNDSTATION_HOME`, `GROUNDSTATION_NON_INTERACTIVE`.
@@ -160,7 +161,7 @@ groundstation/
 ├── Cargo.toml                  workspace · edition 2024 · rust 1.88 · resolver 3
 ├── crates/
 │   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
-│   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction)
+│   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction, embedded UI)
 │   ├── groundstation/          the `groundstation` CLI (login, connect, status)
 │   └── hooks-json/             shared editing of agent hook configs (Claude Code, Codex)
 ├── adapters/

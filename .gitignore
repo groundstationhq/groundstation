@@ -1,3 +1,6 @@
 /target
 *.groundstation-backup
 .DS_Store
+*.tsbuildinfo
+/product.md
+/todo.md

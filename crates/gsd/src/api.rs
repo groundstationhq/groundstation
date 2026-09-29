@@ -47,6 +47,9 @@ pub struct ResyncFailure {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
+    /// Whether this daemon serves the UI at `/` (false for builds without `ui/dist`).
+    #[serde(default)]
+    pub ui: bool,
     /// Adapters this daemon accepts at `/v1/adapters/{name}`.
     pub adapters: Vec<String>,
     pub version: String,
