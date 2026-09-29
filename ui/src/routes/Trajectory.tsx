@@ -9,6 +9,7 @@ import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
 import { attr, cacheHit, promptTokens, type Event, type TrajectoryDetail } from "@/lib/types";
 import { fmtHit, hitCls } from "@/routes/Trajectories";
 import { useReducedMotion } from "@/lib/hooks";
+import { SortToggle, type Order } from "@/components/ui/SortToggle";
 
 const CONTENT_KEYS = new Set<string>([attr.PROMPT_TEXT, attr.TOOL_INPUT, attr.TOOL_OUTPUT, attr.SHELL_COMMAND, attr.SEARCH_PATTERN, attr.ERROR_MESSAGE, attr.NOTIFICATION_MESSAGE]);
 
@@ -239,7 +240,7 @@ export function Trajectory({ id }: { id: string }) {
   const st = useAsync((s) => trajectory(id, s), [id], 3_000);
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "tool" | "model">("all");
-  const [order, setOrder] = useState<"oldest" | "newest">("oldest");
+  const [order, setOrder] = useState<Order>("oldest");
   const data = st.status === "ok" ? st.data.data : null;
   const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
@@ -262,17 +263,7 @@ export function Trajectory({ id }: { id: string }) {
           </div>
           <div className="flex items-center gap-3">
             <div className="mono hidden text-[10.5px] text-fg-4 sm:block">{shown.length} rows · select a row to inspect</div>
-            <button
-              type="button"
-              onClick={() => setOrder((o) => (o === "oldest" ? "newest" : "oldest"))}
-              aria-label={`Sorted ${order} first. Switch to ${order === "oldest" ? "newest" : "oldest"} first.`}
-              className="mono flex items-center gap-1.5 rounded-[4px] border border-line px-2 py-1 text-[11px] text-fg-2 transition-colors hover:border-line-3 hover:text-fg"
-            >
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden>
-                {order === "oldest" ? <path d="M5 1.5v7M2.5 6l2.5 2.5L7.5 6" /> : <path d="M5 8.5v-7M2.5 4l2.5-2.5L7.5 4" />}
-              </svg>
-              {order === "oldest" ? "oldest first" : "newest first"}
-            </button>
+            <SortToggle order={order} onChange={setOrder} />
           </div>
         </div>
         <ol className="px-1 py-1">

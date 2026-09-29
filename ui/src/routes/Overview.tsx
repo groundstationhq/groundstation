@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { SortToggle, type Order } from "@/components/ui/SortToggle";
 import { Glyph, StatusDot } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
 import { Bars, HBars, Line, Stacked } from "@/components/charts";
@@ -56,8 +57,10 @@ function Card({ title, right, children, preview, className }: { title: string; r
   );
 }
 
-function Active({ rows }: { rows: TrajectorySummary[] }) {
-  const live = rows.filter((r) => r.status === "running" || r.status === "idle" || r.status === "waiting").slice(0, 6);
+const byStart = (order: Order) => (a: TrajectorySummary, b: TrajectorySummary) => (order === "newest" ? b.started_at.localeCompare(a.started_at) : a.started_at.localeCompare(b.started_at));
+
+function Active({ rows, order }: { rows: TrajectorySummary[]; order: Order }) {
+  const live = rows.filter((r) => r.status === "running" || r.status === "idle" || r.status === "waiting").sort(byStart(order)).slice(0, 6);
   return (
     <Card title="Active now" right={`${live.length} agent${live.length === 1 ? "" : "s"}`}>
       {live.length === 0 ? (
@@ -85,11 +88,11 @@ function Active({ rows }: { rows: TrajectorySummary[] }) {
   );
 }
 
-function Recent({ rows }: { rows: TrajectorySummary[] }) {
-  const recent = [...rows].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 6);
+function Recent({ rows, order, onOrder }: { rows: TrajectorySummary[]; order: Order; onOrder: (o: Order) => void }) {
+  const recent = [...rows].sort(byStart(order)).slice(0, 6);
   const s: Record<string, { dot: "running" | "ok" | "err" | "idle"; cls: string }> = { running: { dot: "running", cls: "text-model" }, completed: { dot: "ok", cls: "text-fg-2" }, failed: { dot: "err", cls: "text-err" } };
   return (
-    <Card title="Recent trajectories" right={<a href="#/trajectories" className="text-fg-3 hover:text-fg">all trajectories →</a>}>
+    <Card title={order === "newest" ? "Latest sessions" : "Oldest sessions"} right={<span className="flex items-center gap-3"><SortToggle order={order} onChange={onOrder} /><a href="#/trajectories" className="text-fg-3 hover:text-fg">all trajectories →</a></span>}>
       <table className="w-full">
         <tbody>
           {recent.map((r) => {
@@ -232,6 +235,7 @@ function Where({ rows }: { rows: TrajectorySummary[] }) {
 export function Overview() {
   const st = useAsync((s) => trajectories(200, s), [], 5_000);
   const rows = useMemo(() => (st.status === "ok" ? st.data.data : []), [st]);
+  const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error") return <Empty title="Couldn't reach the daemon" body={st.error} />;
   return (
@@ -246,14 +250,14 @@ export function Overview() {
       <Strip rows={rows} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
         <div className="space-y-4">
-          <Active rows={rows} />
+          <Active rows={rows} order={order} />
           <Where rows={rows} />
         </div>
         <Findings />
       </div>
       <Charts />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-        <Recent rows={rows} />
+        <Recent rows={rows} order={order} onOrder={setOrder} />
         <Versions />
       </div>
     </div>
