@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-claude-code"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-codex"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-opencode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-pi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-hooks-json"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-schema"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "gsd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
