@@ -161,21 +161,24 @@ pub fn normalize(envelope: &HookEnvelope) -> Normalized {
 
 /// Parses one transcript line into a `model.completed` event, if it records a
 /// model response. A single response can span several lines (one per content
-/// block); they share a message id and therefore an event id.
-pub fn parse_transcript_line(session_id: &str, line: &str) -> Option<Event> {
+/// block); they share a message id and therefore an event id, stamped with
+/// the latest block. Every line is recorded in `state` to time responses
+/// (see [`timing`](crate::timing)).
+pub fn parse_transcript_line(session_id: &str, line: &str, state: &mut Value) -> Option<Event> {
     let v: Value = serde_json::from_str(line).ok()?;
-    if v.get("type")?.as_str()? != "assistant" {
-        return None;
-    }
-    let message = v.get("message")?;
-    let model = message.get("model")?.as_str()?;
-    if model.starts_with('<') {
-        // `<synthetic>` messages are written by Claude Code itself, not the API.
-        return None;
-    }
-    let message_id = message.get("id")?.as_str()?;
-    let usage = message.get("usage")?;
     let timestamp: DateTime<Utc> = v.get("timestamp")?.as_str()?.parse().ok()?;
+    let message = v.get("message");
+    let model = message.and_then(|m| str_field(m, "model"));
+    // `<synthetic>` messages are written by Claude Code itself, not the API.
+    let response =
+        str_field(&v, "type") == Some("assistant") && model.is_some_and(|m| !m.starts_with('<'));
+    let message_id = message
+        .and_then(|m| str_field(m, "id"))
+        .filter(|_| response);
+    let started = crate::timing::observe(&v, timestamp.timestamp_millis(), message_id, state);
+
+    let (message, model, message_id) = (message?, model?, message_id?);
+    let usage = message.get("usage")?;
 
     let id = Uuid::new_v5(
         &TRANSCRIPT_NS,
@@ -208,6 +211,12 @@ pub fn parse_transcript_line(session_id: &str, line: &str) -> Option<Event> {
     );
     if let Some(reason) = str_field(message, "stop_reason") {
         ev.set(attr::GEN_AI_FINISH_REASONS, json!([reason]));
+    }
+    if let Some(started) = started {
+        ev.set(
+            attr::DURATION_MS,
+            (timestamp.timestamp_millis() - started).max(0),
+        );
     }
     ev.set(attr::REQUEST_ID, str_field(&v, "requestId"));
     if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
@@ -476,17 +485,29 @@ mod tests {
             }
         })
         .to_string();
-        let ev = parse_transcript_line("sess-1", &line).unwrap();
+        let ev = parse_transcript_line("sess-1", &line, &mut Value::Null).unwrap();
         assert_eq!(ev.kind, EventKind::ModelCompleted);
         assert_eq!(ev.agent.version.as_deref(), Some("2.1.0"));
         assert_eq!(ev.get(attr::GEN_AI_OUTPUT_TOKENS), Some(&json!(340)));
         assert_eq!(ev.get(attr::CACHE_READ_TOKENS), Some(&json!(18000)));
         assert_eq!(ev.get(attr::MODEL_TOOL_USES), Some(&json!(1)));
-        assert_eq!(ev.id, parse_transcript_line("sess-1", &line).unwrap().id);
+        assert_eq!(
+            ev.id,
+            parse_transcript_line("sess-1", &line, &mut Value::Null)
+                .unwrap()
+                .id
+        );
 
-        assert!(parse_transcript_line("sess-1", r#"{"type":"user","message":{}}"#).is_none());
-        assert!(parse_transcript_line("sess-1", "not json").is_none());
+        assert!(
+            parse_transcript_line(
+                "sess-1",
+                r#"{"type":"user","message":{}}"#,
+                &mut Value::Null
+            )
+            .is_none()
+        );
+        assert!(parse_transcript_line("sess-1", "not json", &mut Value::Null).is_none());
         let synthetic = line.replace("claude-opus-5-5", "<synthetic>");
-        assert!(parse_transcript_line("sess-1", &synthetic).is_none());
+        assert!(parse_transcript_line("sess-1", &synthetic, &mut Value::Null).is_none());
     }
 }

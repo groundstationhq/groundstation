@@ -103,7 +103,8 @@ export function buildRows(d: TrajectoryDetail): Row[] {
           out: num(e, attr.GEN_AI_OUTPUT_TOKENS) ?? 0,
         };
         const dur = num(e, attr.DURATION_MS) ?? null;
-        rows.push({ ...base, kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", durationMs: dur, dims: [], tokens });
+        // Stamped when the response finished; the call started `dur` earlier.
+        rows.push({ ...base, t0: base.t0 - (dur ?? 0), kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", durationMs: dur, dims: [], tokens });
         break;
       }
       case "subagent.started": {

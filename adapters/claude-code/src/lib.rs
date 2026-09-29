@@ -12,7 +12,7 @@
 //!     they fire.
 //!   - **The session transcript** (`transcript_path` in every hook payload):
 //!     one line per model response, carrying the model name and token usage
-//!     that hooks don't expose.
+//!     that hooks don't expose, and timestamps its durations are derived from.
 //!
 //! Sample payloads live in `tests/fixtures/`. When Claude Code changes a
 //! payload, add a fixture first.
@@ -24,6 +24,7 @@ use serde_json::Value;
 
 mod hooks;
 pub mod settings;
+mod timing;
 
 pub use hooks::tool_category;
 
@@ -41,14 +42,14 @@ impl Adapter for ClaudeCode {
         hooks::normalize(envelope)
     }
 
-    /// Claude Code lines are self-contained, so no state is kept.
+    /// State holds the recent lines needed to time model responses.
     fn parse_transcript_line(
         &self,
         trajectory_id: &str,
         line: &str,
-        _: &mut Value,
+        state: &mut Value,
     ) -> Option<Event> {
-        hooks::parse_transcript_line(trajectory_id, line)
+        hooks::parse_transcript_line(trajectory_id, line, state)
     }
 
     fn transcript_roots(&self) -> Vec<PathBuf> {

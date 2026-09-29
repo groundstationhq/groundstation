@@ -116,9 +116,10 @@ fn transcript_paths_are_reported() {
 #[test]
 fn transcript_yields_one_event_per_model_response() {
     let text = std::fs::read_to_string(fixtures().join("transcript.jsonl")).unwrap();
+    let mut state = Value::Null;
     let events: Vec<_> = text
         .lines()
-        .filter_map(|line| ClaudeCode.parse_transcript_line(SESSION, line, &mut Value::Null))
+        .filter_map(|line| ClaudeCode.parse_transcript_line(SESSION, line, &mut state))
         .collect();
 
     // Two content-block lines of msg_01AbCdEf share an id; the daemon keeps
@@ -144,4 +145,12 @@ fn transcript_yields_one_event_per_model_response() {
         Some(&json!(["tool_use"]))
     );
     assert_eq!(last.get(attr::MODEL_TOOL_USES), Some(&Value::from(1)));
+    // From the prompt (14:03:11.002) to the response's last block (14:03:13.912).
+    assert_eq!(last.get(attr::DURATION_MS), Some(&json!(2910)));
+    // From the tool result (14:04:01.004) to the only block (14:04:03.440).
+    let next = events
+        .iter()
+        .find(|e| e.span_id.as_deref() == Some("msg_01GhIjKl"))
+        .unwrap();
+    assert_eq!(next.get(attr::DURATION_MS), Some(&json!(2436)));
 }
