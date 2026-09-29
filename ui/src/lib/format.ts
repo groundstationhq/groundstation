@@ -41,3 +41,8 @@ export function pct(n: number, digits = 0): string {
 }
 
 export const cx = (...c: Array<string | false | null | undefined>) => c.filter(Boolean).join(" ");
+
+/** Shorten a home-directory prefix to ~, matching the CLI's rendering. */
+export function tilde(path: string): string {
+  return path.replace(/^\/(Users|home)\/[^/]+/, "~");
+}

@@ -4,7 +4,7 @@ import { Glyph, StatusDot, kindColor } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
 import { trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtClock, fmtDur, fmtInt, fmtTokens } from "@/lib/format";
+import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
 import { breakdown, buildRows, type Row } from "@/lib/spans";
 import { attr, totalTokens, type Event, type TrajectoryDetail } from "@/lib/types";
 import { useReducedMotion } from "@/lib/hooks";
@@ -171,7 +171,7 @@ function Header({ d }: { d: TrajectoryDetail }) {
           <div className="mono mt-1 flex flex-wrap items-center gap-x-2 text-[11.5px] text-fg-3">
             <span>{d.id}</span><span className="text-fg-4">/</span>
             <span>{d.agent}{d.agent_version ? ` ${d.agent_version}` : ""}</span><span className="text-fg-4">/</span>
-            <span>{d.repository ?? d.cwd ?? "—"}{d.branch ? ` @ ${d.branch}` : ""}</span>
+            <span>{(d.repository ?? d.cwd) ? tilde((d.repository ?? d.cwd) as string) : "—"}{d.branch ? ` @ ${d.branch}` : ""}</span>
             {d.host && <><span className="text-fg-4">/</span><span>{d.host}</span></>}
           </div>
         </div>
