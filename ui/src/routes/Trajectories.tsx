@@ -47,7 +47,7 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
   const cells: Array<[string, string, string?]> = [
     ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running · ${rows.filter((r) => r.status === "idle" || r.status === "waiting").length} idle`],
     ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
-    ["Median runtime", fmtDur(median(done.map((r) => r.duration_ms))), ""],
+    ["Median runtime", done.length ? fmtDur(median(done.map((r) => r.duration_ms))) : "—", ""],
     ["Tokens", fmtTokens(rows.reduce((a, r) => a + totalTokens(r), 0)), ""],
     ["Tool calls", fmtInt(rows.reduce((a, r) => a + r.tool_calls, 0)), ""],
     ["Tool errors", fmtInt(rows.reduce((a, r) => a + r.tool_errors, 0)), ""],
@@ -117,7 +117,7 @@ export function Trajectories() {
                       <div className="mono text-[10.5px] text-fg-4">{r.agent_version ?? ""}</div>
                     </td>
                     <td className={cx("mono px-3 py-2.5 text-[12px] text-fg-2", COLS[2][1])}>
-                      {r.repository ?? (r.cwd ? r.cwd.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, "~") : "—")}
+                      {r.repository ?? (r.cwd ? r.cwd.replace(/^\/(Users|home)\/[^/]+/, "~") : "—")}
                       {r.branch && <div className="text-[10.5px] text-fg-4">{r.branch}</div>}
                     </td>
                     <td className={cx("mono whitespace-nowrap px-3 py-2.5 text-[12px] text-fg-3", COLS[3][1])}>{ago(r.started_at)}</td>
