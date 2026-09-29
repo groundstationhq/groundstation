@@ -334,7 +334,7 @@ export function Trajectory({ id }: { id: string }) {
   const st = useAsync((s) => trajectory(id, s), [id], 3_000);
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "tool" | "model">("all");
-  const [order, setOrder] = useState<Order>("oldest");
+  const [order, setOrder] = useState<Order>("newest");
   const data = st.status === "ok" ? st.data.data : null;
   const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
