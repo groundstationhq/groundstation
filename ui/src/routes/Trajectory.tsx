@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Glyph, StatusDot, kindColor } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
@@ -45,7 +45,7 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
     { k: modelKnown ? "idle / other" : "unattributed", v: other, c: "var(--color-bg-4)" },
   ].filter((p) => p.v > 0);
   return (
-    <div className="grid gap-4 border-b border-line px-4 py-3 lg:grid-cols-3">
+    <div className="grid gap-x-6 gap-y-4 border-b border-line px-4 py-3 md:grid-cols-2">
       <div>
         <div className="label text-[10px]">Where the time went</div>
         <div className="mt-2 flex h-2.5 w-full gap-[2px] overflow-hidden rounded-[3px]" role="img" aria-label={parts.map((p) => `${p.k} ${Math.round((p.v / total) * 100)}%`).join(", ")}>
@@ -75,25 +75,26 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
         <div className="label text-[10px]">Cache hit rate per model call</div>
         <div className="mt-2"><CacheChart rows={rows} /></div>
       </div>
+      <div>
+        <div className="label text-[10px]">Output tokens per second per model call</div>
+        <div className="mt-2"><SpeedChart rows={rows} /></div>
+      </div>
     </div>
   );
 }
 
-/** Cache hit rate per model call, in order. A dip means the prompt prefix changed and had to be re-sent. */
-function CacheChart({ rows }: { rows: Row[] }) {
+interface CallPoint { id: string; t0: number; v: number | null; tip: ReactNode }
+
+/** A line over model calls in order, with a 0–max y axis and a hover readout for the nearest call. */
+function CallChart({ pts, max, fmtTick, flag, ariaLabel, footer }: { pts: CallPoint[]; max: number; fmtTick: (v: number) => string; flag?: (v: number) => boolean; ariaLabel: string; footer: ReactNode }) {
   const [hover, setHover] = useState<number | null>(null);
-  const pts = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ id: r.id, t0: r.t0, hit: cacheHit(r.tokens!.in, r.tokens!.cacheWrite, r.tokens!.cacheRead), read: r.tokens!.cacheRead, write: r.tokens!.cacheWrite }));
-  const valid = pts.filter((p) => p.hit != null);
-  if (valid.length < 2) return <div className="mono text-[10.5px] text-fg-4">not enough model calls</div>;
   const W = 100, H = 30;
   const x = (i: number) => (i / (pts.length - 1)) * W;
-  const y = (h: number) => H - 2 - h * (H - 4);
-  const d = pts.map((p, i) => (p.hit == null ? "" : `${i === 0 || pts[i - 1].hit == null ? "M" : "L"}${x(i).toFixed(2)} ${y(p.hit).toFixed(2)}`)).join(" ");
-  const dips = pts.map((p, i) => ({ ...p, i })).filter((p) => p.hit != null && p.hit < 0.5);
-  const worst = dips.sort((a, b) => (a.hit ?? 1) - (b.hit ?? 1))[0];
-  const min = Math.min(...valid.map((p) => p.hit as number));
-  const last = valid[valid.length - 1].hit as number;
+  const y = (v: number) => H - 2 - Math.min(1, v / max) * (H - 4);
+  const d = pts.map((p, i) => (p.v == null ? "" : `${i === 0 || pts[i - 1].v == null ? "M" : "L"}${x(i).toFixed(2)} ${y(p.v).toFixed(2)}`)).join(" ");
+  const flagged = flag ? pts.map((p, i) => ({ ...p, i })).filter((p) => p.v != null && flag(p.v)) : [];
   const h = hover != null ? pts[hover] : null;
+  const hx = hover != null ? (hover / (pts.length - 1)) * 100 : 0;
   const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
@@ -103,33 +104,100 @@ function CacheChart({ rows }: { rows: Row[] }) {
     <div>
       <div className="flex gap-1.5">
         <div className="mono relative h-[52px] w-7 shrink-0 text-right text-[9.5px] leading-none text-fg-4" aria-hidden>
-          {[1, 0.5, 0].map((g) => <span key={g} className="absolute right-0 -translate-y-1/2" style={{ top: `${(y(g) / H) * 100}%` }}>{g * 100}%</span>)}
+          {[max, max / 2, 0].map((g) => <span key={g} className="absolute right-0 -translate-y-1/2" style={{ top: `${(y(g) / H) * 100}%` }}>{fmtTick(g)}</span>)}
         </div>
         <div className="relative h-[52px] min-w-0 flex-1" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
-          <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" preserveAspectRatio="none" role="img" aria-label={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}>
-            {[0, 0.5, 1].map((g) => <line key={g} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="var(--color-line)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />)}
+          <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
+            {[0, max / 2, max].map((g) => <line key={g} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="var(--color-line)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />)}
             <path d={d} fill="none" stroke="var(--color-model)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-            {dips.map((p) => <circle key={p.id} cx={x(p.i)} cy={y(p.hit as number)} r="1.6" fill="var(--color-warn)" />)}
+            {flagged.map((p) => <circle key={p.id} cx={x(p.i)} cy={y(p.v as number)} r="1.6" fill="var(--color-warn)" />)}
           </svg>
-          {h && hover != null && (
+          {h && (
             <>
-              <div className="pointer-events-none absolute inset-y-0 w-px bg-fg-4/50" style={{ left: `${(hover / (pts.length - 1)) * 100}%` }} />
-              {h.hit != null && <div className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-bg bg-model" style={{ left: `${(hover / (pts.length - 1)) * 100}%`, top: `${(y(h.hit) / H) * 100}%` }} />}
-              <div
-                className={cx("mono pointer-events-none absolute bottom-full z-10 mb-1.5 whitespace-nowrap rounded-[4px] border border-line bg-bg-2 px-2 py-1 text-[10.5px] text-fg-3 shadow-sm", hover / (pts.length - 1) > 0.6 ? "-translate-x-full" : "")}
-                style={{ left: `${(hover / (pts.length - 1)) * 100}%` }}
-              >
-                <span className={hitCls(h.hit)}>{fmtHit(h.hit)}</span> · call {hover + 1} at {fmtClock(h.t0 / 1000)} · read {fmtK(h.read)} · wrote {fmtK(h.write)}
+              <div className="pointer-events-none absolute inset-y-0 w-px bg-fg-4/50" style={{ left: `${hx}%` }} />
+              {h.v != null && <div className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-bg bg-model" style={{ left: `${hx}%`, top: `${(y(h.v) / H) * 100}%` }} />}
+              <div className={cx("mono pointer-events-none absolute bottom-full z-10 mb-1.5 whitespace-nowrap rounded-[4px] border border-line bg-bg-2 px-2 py-1 text-[10.5px] text-fg-3 shadow-sm", hx > 60 ? "-translate-x-full" : "")} style={{ left: `${hx}%` }}>
+                {h.tip} · call {hover! + 1} at {fmtClock(h.t0 / 1000)}
               </div>
             </>
           )}
         </div>
       </div>
-      <div className="mono mt-1 flex flex-wrap justify-between gap-x-3 pl-[34px] text-[10.5px] text-fg-4">
-        <span>latest <span className={hitCls(last)}>{fmtHit(last)}</span> · lowest <span className={hitCls(min)}>{fmtHit(min)}</span></span>
-        {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtK(worst.write)}</span> : <span>no calls under 50%</span>}
-      </div>
+      <div className="mono mt-1 flex flex-wrap justify-between gap-x-3 pl-[34px] text-[10.5px] text-fg-4">{footer}</div>
     </div>
+  );
+}
+
+/** Cache hit rate per model call, in order. A dip means the prompt prefix changed and had to be re-sent. */
+function CacheChart({ rows }: { rows: Row[] }) {
+  const calls = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ ...r, hit: cacheHit(r.tokens!.in, r.tokens!.cacheWrite, r.tokens!.cacheRead) }));
+  const valid = calls.filter((c) => c.hit != null);
+  if (valid.length < 2) return <div className="mono text-[10.5px] text-fg-4">not enough model calls</div>;
+  const pts: CallPoint[] = calls.map((c) => ({
+    id: c.id,
+    t0: c.t0,
+    v: c.hit,
+    tip: <><span className={hitCls(c.hit)}>{fmtHit(c.hit)}</span> · read {fmtK(c.tokens!.cacheRead)} · wrote {fmtK(c.tokens!.cacheWrite)}</>,
+  }));
+  const dips = calls.filter((c) => c.hit != null && c.hit < 0.5);
+  const worst = [...dips].sort((a, b) => (a.hit ?? 1) - (b.hit ?? 1))[0];
+  const min = Math.min(...valid.map((c) => c.hit as number));
+  const last = valid[valid.length - 1].hit as number;
+  return (
+    <CallChart
+      pts={pts}
+      max={1}
+      fmtTick={(v) => `${Math.round(v * 100)}%`}
+      flag={(v) => v < 0.5}
+      ariaLabel={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}
+      footer={<>
+        <span>latest <span className={hitCls(last)}>{fmtHit(last)}</span> · lowest <span className={hitCls(min)}>{fmtHit(min)}</span></span>
+        {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtK(worst.tokens!.cacheWrite)}</span> : <span>no calls under 50%</span>}
+      </>}
+    />
+  );
+}
+
+/** Smallest 1/2/5×10ⁿ at or above v, so the axis ends on a round number. */
+function niceCeil(v: number): number {
+  const e = 10 ** Math.floor(Math.log10(v));
+  return [1, 2, 5, 10].map((m) => m * e).find((n) => n >= v) ?? 10 * e;
+}
+
+const fmtTps = (v: number) => (v >= 10 ? `${Math.round(v)}` : v.toFixed(1));
+
+/**
+ * Output tokens per second per model call: output tokens over the whole call duration. Time to first
+ * token is included, so calls with short outputs (a single tool call) read slower than the model streams.
+ */
+function SpeedChart({ rows }: { rows: Row[] }) {
+  const calls = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ ...r, tps: r.durationMs && r.tokens!.out > 0 ? r.tokens!.out / (r.durationMs / 1000) : null }));
+  const valid = calls.filter((c) => c.tps != null).map((c) => c.tps as number);
+  if (valid.length < 2) {
+    const noLatency = calls.length >= 2 && calls.every((c) => c.durationMs == null);
+    return <div className="mono text-[10.5px] text-fg-4">{noLatency ? "this adapter reports model calls without latency" : "not enough model calls"}</div>;
+  }
+  const pts: CallPoint[] = calls.map((c) => ({
+    id: c.id,
+    t0: c.t0,
+    v: c.tps,
+    tip: c.tps == null ? <span>—</span> : <><span className="text-fg">{fmtTps(c.tps)} tok/s</span> · {fmtK(c.tokens!.out)} out in {fmtDur(c.durationMs!)}</>,
+  }));
+  const sorted = [...valid].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const totalOut = calls.reduce((n, c) => n + (c.tps != null ? c.tokens!.out : 0), 0);
+  const totalSec = calls.reduce((n, c) => n + (c.tps != null ? c.durationMs! / 1000 : 0), 0);
+  return (
+    <CallChart
+      pts={pts}
+      max={niceCeil(sorted[sorted.length - 1])}
+      fmtTick={fmtTps}
+      ariaLabel={`Output tokens per second across ${pts.length} model calls, median ${fmtTps(median)}, range ${fmtTps(sorted[0])} to ${fmtTps(sorted[sorted.length - 1])}`}
+      footer={<>
+        <span>median <span className="text-fg">{fmtTps(median)}</span> · range {fmtTps(sorted[0])}–{fmtTps(sorted[sorted.length - 1])} tok/s</span>
+        <span>overall {fmtTps(totalOut / totalSec)} tok/s over {fmtK(totalOut)} out</span>
+      </>}
+    />
   );
 }
 
