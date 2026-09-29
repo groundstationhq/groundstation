@@ -184,7 +184,7 @@ const FAILED: Spec = {
 export const DEMO: TrajectoryDetail[] = [LOOP, FLAKY, OAUTH, DEPS, FAILED].map(build);
 
 export const DEMO_HEALTH = {
-  status: "ok", version: "0.1.0-demo", schema: SCHEMA, pid: 0, data_dir: "(demo data)",
+  status: "ok", adapters: ["claude-code"], version: "0.1.0-demo", schema: SCHEMA, pid: 0, data_dir: "(demo data)",
   trajectories: DEMO.length, events: DEMO.reduce((a, d) => a + d.events.length, 0), spool_pending: 0,
   upload: { endpoint: null, pending: 0 },
 };

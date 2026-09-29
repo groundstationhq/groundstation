@@ -91,6 +91,8 @@ export const attr = {
 
 export interface Health {
   status: string;
+  /** Adapters this daemon accepts at `/v1/adapters/{name}`. */
+  adapters: string[];
   version: string;
   schema: string;
   pid: number;
