@@ -88,7 +88,11 @@ mod tests {
                 observed_at: Utc::now(),
                 payload: json!({"session_id": "s", "hook_event_name": hook}),
             };
-            write(dir.path(), &SpoolItem::ClaudeCode(envelope)).unwrap();
+            let item = SpoolItem::Hook {
+                adapter: "claude-code".into(),
+                envelope,
+            };
+            write(dir.path(), &item).unwrap();
         }
         std::fs::write(dir.path().join("zzz.json"), b"{nope").unwrap();
 

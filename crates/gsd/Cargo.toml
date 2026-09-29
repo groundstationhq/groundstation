@@ -12,6 +12,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["serde", "c
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.10"
 gethostname = "1.1.0"
+groundstation-adapter-claude-code = { version = "0.1.0", path = "../../adapters/claude-code" }
 groundstation-schema = { version = "0.1.0", path = "../schema" }
 hex = "0.4.3"
 regex = "1.13.1"

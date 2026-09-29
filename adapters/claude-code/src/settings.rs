@@ -26,7 +26,8 @@ pub const HOOK_EVENTS: &[(&str, bool)] = &[
 /// daemon well before this and spools instead.
 const HOOK_TIMEOUT_SECS: u64 = 10;
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+/// Which Claude Code settings file to edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// ~/.claude/settings.json: every project on this machine.
     User,
@@ -38,10 +39,7 @@ pub enum Scope {
 
 pub fn settings_path(scope: Scope) -> Result<PathBuf> {
     Ok(match scope {
-        Scope::User => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| gsd::config::home_dir().join(".claude"))
-            .join("settings.json"),
+        Scope::User => crate::config_dir().join("settings.json"),
         Scope::Project => std::env::current_dir()?.join(".claude/settings.json"),
         Scope::Local => std::env::current_dir()?.join(".claude/settings.local.json"),
     })
@@ -81,13 +79,14 @@ pub fn write(path: &Path, settings: &Value) -> Result<Option<PathBuf>> {
     Ok(backup)
 }
 
-pub fn hook_command() -> Result<String> {
-    let exe = std::env::current_exe().context("locating the groundstation binary")?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-    Ok(format!(
-        "{} hook claude-code",
-        shell_quote(&exe.to_string_lossy())
-    ))
+/// The command Claude Code runs for every hook, given the absolute path of
+/// the `groundstation` binary. [`uninstall`] recognizes exactly this shape.
+pub fn hook_command(groundstation: &Path) -> String {
+    format!(
+        "{} hook {}",
+        shell_quote(&groundstation.to_string_lossy()),
+        crate::NAME
+    )
 }
 
 fn is_ours(hook: &Value) -> bool {
@@ -223,6 +222,13 @@ mod tests {
     #[test]
     fn quotes_paths_with_spaces() {
         assert_eq!(shell_quote("/a/b"), "/a/b");
+        assert_eq!(
+            hook_command(Path::new("/opt/bin/groundstation")),
+            "/opt/bin/groundstation hook claude-code"
+        );
+        assert!(is_ours(
+            &json!({"command": hook_command(Path::new("/x y/groundstation"))})
+        ));
         assert_eq!(
             shell_quote("/Users/Jo Doe/bin/groundstation"),
             "'/Users/Jo Doe/bin/groundstation'"

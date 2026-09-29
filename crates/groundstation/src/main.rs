@@ -1,6 +1,5 @@
 //! `groundstation`: the Ground Station CLI.
 
-mod claude_settings;
 mod client;
 mod render;
 
@@ -12,11 +11,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
+use groundstation_adapter_claude_code::{self as claude_code, settings as claude_settings};
 use gsd::api::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
 use uuid::Uuid;
 
-use crate::claude_settings::Scope;
 use crate::client::Client;
 
 #[derive(Parser)]
@@ -95,6 +94,36 @@ enum AgentName {
     ClaudeCode,
 }
 
+impl AgentName {
+    /// The adapter name gsd knows this agent by.
+    fn adapter(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => claude_code::NAME,
+        }
+    }
+}
+
+/// Which Claude Code settings file `connect` and `disconnect` edit.
+#[derive(Clone, Copy, ValueEnum)]
+enum Scope {
+    /// ~/.claude/settings.json: every project on this machine.
+    User,
+    /// .claude/settings.json: this project, committed for the whole team.
+    Project,
+    /// .claude/settings.local.json: this project, just for you.
+    Local,
+}
+
+impl From<Scope> for claude_settings::Scope {
+    fn from(scope: Scope) -> Self {
+        match scope {
+            Scope::User => Self::User,
+            Scope::Project => Self::Project,
+            Scope::Local => Self::Local,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -132,7 +161,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             agent: AgentName::ClaudeCode,
             scope,
         } => {
-            let path = claude_settings::settings_path(scope)?;
+            let path = claude_settings::settings_path(scope.into())?;
             let mut settings = claude_settings::read(&path)?;
             let removed = claude_settings::uninstall(&mut settings);
             if removed == 0 {
@@ -224,18 +253,22 @@ fn hook(config_path: Option<PathBuf>, agent: AgentName) -> Result<()> {
         payload,
     };
 
-    let AgentName::ClaudeCode = agent;
+    let adapter = agent.adapter();
     let sent = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
             Client::for_hooks(&config)?
-                .post("/v1/adapters/claude-code", &envelope)
+                .post(&format!("/v1/adapters/{adapter}"), &envelope)
                 .await
         });
     if let Err(e) = sent {
         // gsd is down or busy: keep the payload for it to pick up later.
-        gsd::spool::write(&config.spool_dir(), &SpoolItem::ClaudeCode(envelope))
+        let item = SpoolItem::Hook {
+            adapter: adapter.to_string(),
+            envelope,
+        };
+        gsd::spool::write(&config.spool_dir(), &item)
             .with_context(|| format!("spooling after send failed ({e:#})"))?;
     }
     Ok(())
@@ -248,9 +281,11 @@ fn connect_claude_code(
     dry_run: bool,
     no_start: bool,
 ) -> Result<ExitCode> {
-    let path = claude_settings::settings_path(scope)?;
+    let exe = std::env::current_exe().context("locating the groundstation binary")?;
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let path = claude_settings::settings_path(scope.into())?;
     let mut settings = claude_settings::read(&path)?;
-    claude_settings::install(&mut settings, &claude_settings::hook_command()?)?;
+    claude_settings::install(&mut settings, &claude_settings::hook_command(&exe))?;
     if dry_run {
         println!("{}", serde_json::to_string_pretty(&settings)?);
         return Ok(ExitCode::SUCCESS);

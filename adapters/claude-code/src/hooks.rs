@@ -1,31 +1,16 @@
-//! Claude Code adapter.
-//!
-//! Two sources, combined into one trajectory per Claude Code session:
-//!
-//! * **Hooks** (`groundstation hook claude-code`): lifecycle, user turns and
-//!   tool calls, stamped the moment they happen.
-//! * **The session transcript** (`transcript_path` in every hook payload):
-//!   one line per model response, carrying model name and token usage, which
-//!   hooks do not expose. Read incrementally whenever a hook arrives.
+//! Hook payloads and transcript lines → `groundstation.telemetry.v0` events.
 
 use chrono::{DateTime, Utc};
-use groundstation_schema::{Agent, ErrorCategory, Event, EventKind, ToolCategory, attr};
+use groundstation_schema::{
+    Agent, ErrorCategory, Event, EventKind, HookEnvelope, Normalized, ToolCategory, attr,
+};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::api::HookEnvelope;
-
-pub const AGENT: &str = "claude-code";
+use crate::NAME as AGENT;
 
 /// Namespace for event ids derived from transcript content.
 const TRANSCRIPT_NS: Uuid = Uuid::from_u128(0x6773_2e74_7261_6e73_6372_6970_742e_7630);
-
-/// What the daemon should do with a hook payload.
-pub struct Normalized {
-    pub events: Vec<Event>,
-    /// Transcripts that may have new model responses.
-    pub transcripts: Vec<String>,
-}
 
 pub fn normalize(envelope: &HookEnvelope) -> Normalized {
     let p = &envelope.payload;

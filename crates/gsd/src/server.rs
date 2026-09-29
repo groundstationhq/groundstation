@@ -38,7 +38,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/events", post(ingest_events))
-        .route("/v1/adapters/claude-code", post(ingest_claude_code))
+        .route("/v1/adapters/{name}", post(ingest_hook))
         .route("/v1/trajectories", get(list_trajectories))
         .route("/v1/trajectories/{id}", get(get_trajectory))
         .route("/v1/shutdown", post(shutdown))
@@ -76,6 +76,12 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
     let counts = blocking(move || store.counts()).await?;
     Ok(Json(Health {
         status: "ok".into(),
+        adapters: s
+            .ingestor
+            .adapter_names()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         version: env!("CARGO_PKG_VERSION").into(),
         schema: SCHEMA.into(),
         pid: std::process::id(),
@@ -100,12 +106,22 @@ async fn ingest_events(
     Ok(Json(IngestResponse { stored }))
 }
 
-async fn ingest_claude_code(
+async fn ingest_hook(
     State(s): State<AppState>,
+    Path(name): Path<String>,
     Json(envelope): Json<HookEnvelope>,
 ) -> Result<Json<IngestResponse>, ApiError> {
+    if !s.ingestor.has_adapter(&name) {
+        return Err(error(
+            StatusCode::NOT_FOUND,
+            format!(
+                "unknown adapter {name:?}; this gsd supports: {}",
+                s.ingestor.adapter_names().join(", ")
+            ),
+        ));
+    }
     let ingestor = s.ingestor.clone();
-    let stored = blocking(move || ingestor.ingest_claude_code(envelope)).await?;
+    let stored = blocking(move || ingestor.ingest_hook(&name, envelope)).await?;
     Ok(Json(IngestResponse { stored }))
 }
 
@@ -259,6 +275,14 @@ mod tests {
 
         let (status, _) = call(&app, "GET", "/v1/trajectories/zzz", host, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let envelope = json!({"id": Uuid::now_v7(), "observed_at": Utc::now(), "payload": {}});
+        let (status, body) = call(&app, "POST", "/v1/adapters/codex", host, Some(envelope)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"].as_str().unwrap().contains("claude-code"),
+            "{body}"
+        );
     }
 
     #[tokio::test]

@@ -144,6 +144,8 @@ groundstation/
 │   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
 │   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction)
 │   └── groundstation/          the `groundstation` CLI (login, connect, status)
+├── adapters/
+│   └── claude-code/            hook install + payload/transcript normalization, with recorded fixtures
 ├── ui/                         trajectory viewer (Vite + React + TypeScript), see ui/README.md
 ├── assets/                     logo, banner, screenshots
 ├── STYLEGUIDE.md               visual language, telemetry conventions, copy voice, code rules
@@ -151,7 +153,7 @@ groundstation/
 └── README.md
 ```
 
-Coming next, in this order: embedding `ui/dist` in `gsd`, backend crates over ClickHouse, `adapters/claude-code/` as a separate crate, and `docs/`.
+Coming next, in this order: embedding `ui/dist` in `gsd`, backend crates over ClickHouse, and more of `docs/`.
 
 ```sh
 cargo build --workspace

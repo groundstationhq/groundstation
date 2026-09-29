@@ -540,6 +540,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "groundstation-adapter-claude-code",
  "groundstation-schema",
  "gsd",
  "reqwest",
@@ -548,6 +549,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "uuid",
+]
+
+[[package]]
+name = "groundstation-adapter-claude-code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "groundstation-schema",
+ "serde_json",
  "uuid",
 ]
 
@@ -571,6 +583,7 @@ dependencies = [
  "clap",
  "flate2",
  "gethostname",
+ "groundstation-adapter-claude-code",
  "groundstation-schema",
  "hex",
  "http-body-util",

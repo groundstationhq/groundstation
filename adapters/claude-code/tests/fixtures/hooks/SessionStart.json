@@ -1,0 +1,8 @@
+{
+  "session_id": "0f6b1c4e-3a55-4f7e-9d7a-2c1f6b8e4d21",
+  "transcript_path": "/Users/dev/.claude/projects/-Users-dev-src-shop/0f6b1c4e-3a55-4f7e-9d7a-2c1f6b8e4d21.jsonl",
+  "cwd": "/Users/dev/src/shop",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+}

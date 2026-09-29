@@ -14,7 +14,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+pub mod adapter;
 pub mod attr;
+
+pub use adapter::{Adapter, HookEnvelope, Normalized};
 
 /// Schema identifier carried on every batch.
 pub const SCHEMA: &str = "groundstation.telemetry.v0";

@@ -5,8 +5,11 @@ The local half of Ground Station: the `gsd` daemon, the `groundstation` CLI, and
 | Crate | Binary | What it does |
 |---|---|---|
 | [`crates/schema`](../crates/schema) | | `groundstation.telemetry.v0`: event types and attribute names shared by adapters, SDKs, `gsd` and the backend |
-| [`crates/gsd`](../crates/gsd) | `gsd` | Local daemon. Ingests, normalizes, redacts, stores and (optionally) uploads agent telemetry. The Claude Code adapter lives in `src/adapters/` |
+| [`crates/gsd`](../crates/gsd) | `gsd` | Local daemon. Ingests, redacts, stores and (optionally) uploads agent telemetry, translating hook payloads with the matching adapter |
 | [`crates/groundstation`](../crates/groundstation) | `groundstation` | CLI. Connects agents, runs their hooks, manages `gsd`, and shows trajectories |
+| [`adapters/claude-code`](../adapters/claude-code) | | Claude Code: installs hooks in `settings.json`, turns hook payloads and transcript lines into events. Recorded payloads in `tests/fixtures/` |
+
+Each adapter implements the `Adapter` trait from [`crates/schema/src/adapter.rs`](../crates/schema/src/adapter.rs): pure translation from an agent's native payloads to events, with no I/O. `gsd` owns storage, privacy and transcript reading, and keeps raw payloads so they can be re-normalized when an adapter improves. Adding an agent means adding an `adapters/<agent>` crate, registering it in `gsd`'s `builtin_adapters()`, and adding it to the CLI's `connect` targets.
 
 ## Quick start
 
@@ -65,7 +68,7 @@ Claude Code ──hook (stdin JSON)──► groundstation hook claude-code ─�
 | Endpoint | |
 |---|---|
 | `POST /v1/events` | A `groundstation.telemetry.v0` batch, for SDKs and custom agents |
-| `POST /v1/adapters/claude-code` | A Claude Code hook payload wrapped in a `HookEnvelope` |
+| `POST /v1/adapters/{name}` | An agent's hook payload wrapped in a `HookEnvelope`, translated by that adapter (`claude-code`) |
 | `GET /v1/trajectories?limit=N` | Trajectory summaries, most recent first |
 | `GET /v1/trajectories/{id}` | One trajectory and its events (unique id prefixes work) |
 | `GET /v1/health` | Status, counters and transport mode |

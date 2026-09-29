@@ -1,11 +1,12 @@
 //! `gsd`, the Ground Station local daemon.
 //!
-//! Agents (through adapters or SDKs) send events to gsd on `127.0.0.1:4318`.
+//! Agents send events to gsd on `127.0.0.1:4318`: raw hook payloads, which
+//! gsd translates with the agent's adapter (see `adapters/` in the
+//! repository), or finished `groundstation.telemetry.v0` batches from SDKs.
 //! gsd normalizes them to `groundstation.telemetry.v0`, applies privacy
 //! rules, persists them locally, serves them back for local inspection and,
 //! when a backend is configured, uploads them in compressed batches.
 
-pub mod adapters;
 pub mod api;
 pub mod config;
 pub mod ingest;

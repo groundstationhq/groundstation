@@ -7,61 +7,77 @@ use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use groundstation_schema::{Batch, Event, SCHEMA, attr};
+use groundstation_adapter_claude_code::ClaudeCode;
+use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
-use crate::adapters::claude_code;
-use crate::api::{HookEnvelope, SpoolItem};
+use crate::api::SpoolItem;
 use crate::privacy::Privacy;
 use crate::store::{NewEvent, Store};
+
+/// Every adapter this build of gsd understands.
+pub fn builtin_adapters() -> Vec<Box<dyn Adapter>> {
+    vec![Box::new(ClaudeCode)]
+}
+
+struct Registered {
+    adapter: Box<dyn Adapter>,
+    /// Canonicalized [`Adapter::transcript_roots`].
+    roots: Vec<PathBuf>,
+}
 
 pub struct Ingestor {
     pub store: Arc<Store>,
     privacy: Privacy,
     host: String,
-    /// Directories transcripts may be read from. Paths arrive over HTTP, so
-    /// the daemon refuses to open anything else.
-    transcript_roots: Vec<PathBuf>,
+    adapters: Vec<Registered>,
 }
 
 impl Ingestor {
     pub fn new(store: Arc<Store>, privacy: Privacy) -> Self {
-        let mut roots = vec![crate::config::home_dir().join(".claude")];
-        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-            roots.push(PathBuf::from(dir));
-        }
-        let roots = roots
+        let adapters = builtin_adapters()
             .into_iter()
-            .filter_map(|p| p.canonicalize().ok())
+            .map(|adapter| Registered {
+                roots: adapter
+                    .transcript_roots()
+                    .into_iter()
+                    .filter_map(|p| p.canonicalize().ok())
+                    .collect(),
+                adapter,
+            })
             .collect();
         Self {
             store,
             privacy,
             host: gethostname::gethostname().to_string_lossy().into_owned(),
-            transcript_roots: roots,
+            adapters,
         }
     }
 
     #[cfg(test)]
     pub fn with_transcript_root(mut self, root: &Path) -> Self {
-        self.transcript_roots.push(root.canonicalize().unwrap());
+        for registered in &mut self.adapters {
+            registered.roots.push(root.canonicalize().unwrap());
+        }
         self
+    }
+
+    pub fn adapter_names(&self) -> Vec<&'static str> {
+        self.adapters.iter().map(|r| r.adapter.name()).collect()
+    }
+
+    pub fn has_adapter(&self, name: &str) -> bool {
+        self.adapter(name).is_some()
+    }
+
+    fn adapter(&self, name: &str) -> Option<&Registered> {
+        self.adapters.iter().find(|r| r.adapter.name() == name)
     }
 
     pub fn ingest_batch(&self, batch: Batch) -> Result<usize> {
         if batch.schema != SCHEMA {
             bail!("unsupported schema {:?}, expected {SCHEMA:?}", batch.schema);
         }
-        // Captured before the path policy can hash the working directory.
-        let mut cwds: Vec<(String, String)> = batch
-            .events
-            .iter()
-            .filter_map(|e| {
-                let cwd = e.get(attr::CWD)?.as_str()?;
-                Some((e.trajectory_id.clone(), cwd.to_string()))
-            })
-            .collect();
-        cwds.sort();
-        cwds.dedup_by(|a, b| a.0 == b.0);
+        let cwds = raw_cwds(&batch.events);
         let stored = self.store_events(batch.events, None)?;
         for (id, cwd) in cwds {
             self.enrich_repository(&id, &cwd);
@@ -69,27 +85,33 @@ impl Ingestor {
         Ok(stored)
     }
 
-    pub fn ingest_claude_code(&self, envelope: HookEnvelope) -> Result<usize> {
-        let normalized = claude_code::normalize(&envelope);
-        let Some(session) = normalized.events.first().map(|e| e.trajectory_id.clone()) else {
-            bail!("not a Claude Code hook payload (missing session_id or hook_event_name)");
+    /// Normalizes a hook payload with the named adapter, stores the events,
+    /// then reads any transcripts the payload points at.
+    pub fn ingest_hook(&self, adapter: &str, envelope: HookEnvelope) -> Result<usize> {
+        let Some(registered) = self.adapter(adapter) else {
+            bail!("unknown adapter {adapter:?}");
         };
+        let normalized = registered.adapter.normalize(&envelope);
+        let Some(trajectory) = normalized.events.first().map(|e| e.trajectory_id.clone()) else {
+            bail!("payload not recognized by the {adapter} adapter");
+        };
+        let cwds = raw_cwds(&normalized.events);
         let mut stored = self.store_events(normalized.events, Some(&envelope.payload))?;
         for path in normalized.transcripts {
-            match self.sync_transcript(&session, Path::new(&path)) {
+            match self.sync_transcript(registered, &trajectory, Path::new(&path)) {
                 Ok(n) => stored += n,
                 Err(e) => tracing::debug!(%path, "transcript not read: {e:#}"),
             }
         }
-        if let Some(cwd) = envelope.payload.get("cwd").and_then(|c| c.as_str()) {
-            self.enrich_repository(&session, cwd);
+        for (id, cwd) in cwds {
+            self.enrich_repository(&id, &cwd);
         }
         Ok(stored)
     }
 
     pub fn ingest_spooled(&self, item: SpoolItem) -> Result<usize> {
         match item {
-            SpoolItem::ClaudeCode(envelope) => self.ingest_claude_code(envelope),
+            SpoolItem::Hook { adapter, envelope } => self.ingest_hook(&adapter, envelope),
             SpoolItem::Batch(batch) => self.ingest_batch(batch),
         }
     }
@@ -110,18 +132,23 @@ impl Ingestor {
         self.store.insert(events)
     }
 
-    /// Reads model responses appended to a transcript since the last sync.
-    fn sync_transcript(&self, session: &str, path: &Path) -> Result<usize> {
+    /// Reads lines appended to a transcript since the last sync.
+    fn sync_transcript(
+        &self,
+        registered: &Registered,
+        trajectory: &str,
+        path: &Path,
+    ) -> Result<usize> {
         let path = path
             .canonicalize()
             .with_context(|| format!("resolving {}", path.display()))?;
         let allowed = path.extension().is_some_and(|e| e == "jsonl")
-            && self
-                .transcript_roots
-                .iter()
-                .any(|root| path.starts_with(root));
+            && registered.roots.iter().any(|root| path.starts_with(root));
         if !allowed {
-            bail!("refusing to read transcript outside the Claude config directory");
+            bail!(
+                "refusing to read a transcript outside the {} adapter's directories",
+                registered.adapter.name()
+            );
         }
         let key = path.to_string_lossy();
         let mut file = std::fs::File::open(&path)?;
@@ -142,7 +169,7 @@ impl Ingestor {
         };
         let events: Vec<Event> = String::from_utf8_lossy(&buf[..end])
             .lines()
-            .filter_map(|line| claude_code::parse_transcript_line(session, line))
+            .filter_map(|line| registered.adapter.parse_transcript_line(trajectory, line))
             .collect();
         let stored = self.store_events(events, None)?;
         self.store
@@ -181,6 +208,21 @@ impl Ingestor {
     }
 }
 
+/// The working directory of each trajectory, captured before the path
+/// policy can hash it, for the git lookup.
+fn raw_cwds(events: &[Event]) -> Vec<(String, String)> {
+    let mut cwds: Vec<(String, String)> = events
+        .iter()
+        .filter_map(|e| {
+            let cwd = e.get(attr::CWD)?.as_str()?;
+            Some((e.trajectory_id.clone(), cwd.to_string()))
+        })
+        .collect();
+    cwds.sort();
+    cwds.dedup_by(|a, b| a.0 == b.0);
+    cwds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +239,10 @@ mod tests {
     fn ingestor_with(config: Config) -> Ingestor {
         let store = Arc::new(Store::open_in_memory().unwrap());
         Ingestor::new(store, Privacy::with_env(&config, []).unwrap())
+    }
+
+    fn sync(ing: &Ingestor, path: &Path) -> Result<usize> {
+        ing.sync_transcript(ing.adapter("claude-code").unwrap(), "s", path)
     }
 
     fn assistant_line(id: &str, out: u64) -> String {
@@ -218,12 +264,12 @@ mod tests {
         write!(f, "{}", &assistant_line("msg_2", 5)[..20]).unwrap(); // partial line
         f.flush().unwrap();
 
-        assert_eq!(ing.sync_transcript("s", &path).unwrap(), 1);
-        assert_eq!(ing.sync_transcript("s", &path).unwrap(), 0);
+        assert_eq!(sync(&ing, &path).unwrap(), 1);
+        assert_eq!(sync(&ing, &path).unwrap(), 0);
 
         writeln!(f, "{}", &assistant_line("msg_2", 5)[20..]).unwrap();
         f.flush().unwrap();
-        assert_eq!(ing.sync_transcript("s", &path).unwrap(), 1);
+        assert_eq!(sync(&ing, &path).unwrap(), 1);
 
         let (summary, _) = ing.store.trajectory("s").unwrap().unwrap();
         assert_eq!(summary.model_calls, 2);
@@ -235,7 +281,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sess.jsonl");
         std::fs::write(&path, assistant_line("m", 1) + "\n").unwrap();
-        assert!(ingestor().sync_transcript("s", &path).is_err());
+        assert!(sync(&ingestor(), &path).is_err());
     }
 
     #[test]
@@ -249,8 +295,8 @@ mod tests {
                 "prompt": "deploy with token ghp_0123456789abcdefghijklmnopqrstuvwxyz",
             }),
         };
-        assert_eq!(ing.ingest_claude_code(envelope.clone()).unwrap(), 1);
-        assert_eq!(ing.ingest_claude_code(envelope).unwrap(), 0);
+        assert_eq!(ing.ingest_hook("claude-code", envelope.clone()).unwrap(), 1);
+        assert_eq!(ing.ingest_hook("claude-code", envelope).unwrap(), 0);
         let (summary, events) = ing.store.trajectory("s1").unwrap().unwrap();
         assert_eq!(
             summary.title.as_deref(),
@@ -258,6 +304,17 @@ mod tests {
         );
         assert_eq!(summary.user_turns, 1);
         assert!(!serde_json::to_string(&events).unwrap().contains("ghp_"));
+    }
+
+    #[test]
+    fn unknown_adapters_are_rejected() {
+        let envelope = HookEnvelope {
+            id: Uuid::now_v7(),
+            observed_at: Utc::now(),
+            payload: json!({}),
+        };
+        let err = ingestor().ingest_hook("codex", envelope).unwrap_err();
+        assert!(err.to_string().contains("unknown adapter"), "{err}");
     }
 
     #[test]
@@ -280,7 +337,7 @@ mod tests {
             observed_at: Utc::now(),
             payload: json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": cwd}),
         };
-        ing.ingest_claude_code(envelope).unwrap();
+        ing.ingest_hook("claude-code", envelope).unwrap();
         let (summary, events) = ing.store.trajectory("s1").unwrap().unwrap();
         assert_eq!(summary.branch.as_deref(), Some("fix/checkout"));
         let stored_repo = summary.repository.unwrap();
