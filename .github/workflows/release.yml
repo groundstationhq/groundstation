@@ -83,7 +83,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/groundstation" "target/${{ matrix.target }}/release/gsd" LICENSE NOTICE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: ${{ steps.pkg.outputs.asset }}
