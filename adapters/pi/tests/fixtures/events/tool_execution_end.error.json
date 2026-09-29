@@ -1,0 +1,14 @@
+{
+  "event": {
+    "type": "tool_execution_end",
+    "toolCallId": "toolu_02Zz",
+    "toolName": "read",
+    "isError": true,
+    "output": "ENOENT: no such file or directory, open 'src/missing.rs'"
+  },
+  "event_id": "evt-tool_execution_end.error",
+  "at": 1790604243000,
+  "session_id": "019a3b7c-1d2e-7f40-8a55-6b7c8d9e0f1a",
+  "cwd": "/Users/dev/src/shop",
+  "version": "0.87.1"
+}

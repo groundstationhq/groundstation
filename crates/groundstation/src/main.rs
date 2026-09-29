@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use groundstation_adapter_claude_code as claude_code;
 use groundstation_adapter_codex as codex;
 use groundstation_adapter_opencode as opencode;
+use groundstation_adapter_pi as pi;
 use groundstation_hooks_json::HookSet;
 use gsd::api::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
@@ -100,14 +101,26 @@ enum AgentName {
     Codex,
     /// OpenCode v2 or newer.
     Opencode,
+    /// pi (pi.dev).
+    Pi,
 }
 
 /// How an agent is connected.
 enum Integration {
     /// Command hooks in a `hooks.json`-shaped config (Claude Code, Codex).
     Hooks(HookSet),
-    /// A generated plugin file (OpenCode).
-    OpenCodePlugin,
+    /// A generated file the agent loads (OpenCode plugin, pi extension).
+    Generated(Generated),
+}
+
+/// A generated plugin/extension file and the adapter functions that manage it.
+struct Generated {
+    /// What the agent calls it: "plugin", "extension".
+    kind: &'static str,
+    events: &'static [&'static str],
+    render: fn(&str, &Path) -> String,
+    install: fn(&Path, &str) -> Result<bool>,
+    uninstall: fn(&Path) -> Result<bool>,
 }
 
 impl AgentName {
@@ -117,6 +130,7 @@ impl AgentName {
             Self::ClaudeCode => claude_code::NAME,
             Self::Codex => codex::NAME,
             Self::Opencode => opencode::NAME,
+            Self::Pi => pi::NAME,
         }
     }
 
@@ -125,6 +139,7 @@ impl AgentName {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
             Self::Opencode => "OpenCode",
+            Self::Pi => "pi",
         }
     }
 
@@ -132,7 +147,20 @@ impl AgentName {
         match self {
             Self::ClaudeCode => Integration::Hooks(claude_code::settings::HOOKS),
             Self::Codex => Integration::Hooks(codex::settings::HOOKS),
-            Self::Opencode => Integration::OpenCodePlugin,
+            Self::Opencode => Integration::Generated(Generated {
+                kind: "plugin",
+                events: opencode::settings::EVENTS,
+                render: opencode::settings::render,
+                install: opencode::settings::install,
+                uninstall: opencode::settings::uninstall,
+            }),
+            Self::Pi => Integration::Generated(Generated {
+                kind: "extension",
+                events: pi::settings::EVENTS,
+                render: pi::settings::render,
+                install: pi::settings::install,
+                uninstall: pi::settings::uninstall,
+            }),
         }
     }
 
@@ -157,6 +185,15 @@ impl AgentName {
                 Scope::Local => {
                     bail!(
                         "OpenCode has no local plugin directory; use --scope project or --scope user"
+                    )
+                }
+            }),
+            Self::Pi => pi::settings::extension_path(match scope {
+                Scope::User => pi::settings::Scope::User,
+                Scope::Project => pi::settings::Scope::Project,
+                Scope::Local => {
+                    bail!(
+                        "pi has no local extension directory; use --scope project or --scope user"
                     )
                 }
             }),
@@ -224,11 +261,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                         println!("Removed {removed} hooks from {shown}");
                     }
                 }
-                Integration::OpenCodePlugin => {
-                    if opencode::settings::uninstall(&path)? {
-                        println!("Removed the Ground Station plugin {shown}");
+                Integration::Generated(file) => {
+                    if (file.uninstall)(&path)? {
+                        println!("Removed the Ground Station {} {shown}", file.kind);
                     } else {
-                        println!("No Ground Station plugin at {shown}");
+                        println!("No Ground Station {} at {shown}", file.kind);
                     }
                 }
             }
@@ -264,7 +301,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else if rows.is_empty() {
                 println!(
-                    "No trajectories yet. Connect an agent: `groundstation connect claude-code|codex|opencode`."
+                    "No trajectories yet. Connect an agent: `groundstation connect claude-code|codex|opencode|pi`."
                 );
             } else {
                 print!("{}", render::trajectory_table(&rows));
@@ -365,22 +402,29 @@ fn connect(
             let events: Vec<&str> = hooks.events.iter().map(|h| h.event).collect();
             println!("  events    {}", events.join(", "));
         }
-        Integration::OpenCodePlugin => {
-            let version = opencode_version()?;
-            let source = opencode::settings::render(&config.base_url(), &exe);
+        Integration::Generated(file) => {
+            // OpenCode v1 can't load the v2 plugin; check before writing it.
+            let opencode = match agent {
+                AgentName::Opencode => Some(opencode_version()?),
+                _ => None,
+            };
+            let source = (file.render)(&config.base_url(), &exe);
             if dry_run {
                 print!("{source}");
                 return Ok(ExitCode::SUCCESS);
             }
-            let replaced = opencode::settings::install(&path, &source)?;
+            let replaced = (file.install)(&path, &source)?;
             println!("Connected {} to Ground Station", agent.title());
-            match version {
-                Some(v) => println!("  opencode  {v}"),
-                None => println!("  opencode  not found on PATH; install OpenCode 2 or newer"),
+            match opencode {
+                Some(Some(v)) => println!("  opencode  {v}"),
+                Some(None) => {
+                    println!("  opencode  not found on PATH; install OpenCode 2 or newer")
+                }
+                None => {}
             }
             let verb = if replaced { "updated" } else { "written" };
-            println!("  plugin    {shown} ({verb})");
-            println!("  events    {}", opencode::settings::EVENTS.join(", "));
+            println!("  {:<9} {shown} ({verb})", file.kind);
+            println!("  events    {}", file.events.join(", "));
         }
     }
     println!();
@@ -395,6 +439,13 @@ fn connect(
         println!();
         println!("Codex runs new hooks only after you trust them: open Codex, run /hooks,");
         println!("and trust the `groundstation hook codex` entries (once per change).");
+    }
+    if let AgentName::Pi = agent {
+        println!();
+        println!("pi loads extensions at startup: restart running pi sessions, or run /reload.");
+        if let Scope::Project = scope {
+            println!("Project extensions load only when pi trusts the project.");
+        }
     }
     if let AgentName::Opencode = agent {
         println!();

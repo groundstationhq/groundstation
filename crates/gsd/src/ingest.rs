@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use groundstation_adapter_claude_code::ClaudeCode;
 use groundstation_adapter_codex::Codex;
 use groundstation_adapter_opencode::OpenCode;
+use groundstation_adapter_pi::Pi;
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
 use crate::api::SpoolItem;
@@ -19,7 +20,12 @@ use crate::store::{NewEvent, Store};
 
 /// Every adapter this build of gsd understands.
 pub fn builtin_adapters() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(ClaudeCode), Box::new(Codex), Box::new(OpenCode)]
+    vec![
+        Box::new(ClaudeCode),
+        Box::new(Codex),
+        Box::new(OpenCode),
+        Box::new(Pi),
+    ]
 }
 
 struct Registered {

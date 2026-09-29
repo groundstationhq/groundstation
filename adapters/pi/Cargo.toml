@@ -1,6 +1,6 @@
 [package]
-name = "groundstation-adapter-opencode"
-description = "Ground Station adapter for OpenCode v2: plugin installation and event normalization"
+name = "groundstation-adapter-pi"
+description = "Ground Station adapter for pi (pi.dev): extension installation and event normalization"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

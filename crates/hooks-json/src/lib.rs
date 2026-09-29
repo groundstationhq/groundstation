@@ -6,10 +6,15 @@
 //! { "hooks": { "PreToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "…" } ] } ] } }
 //! ```
 //!
+//! Agents configured with a generated file instead (OpenCode plugins, pi
+//! extensions) use [`managed`].
+//!
 //! Edits are surgical: other settings and other hooks are left untouched, and
 //! key order is preserved. Ground Station's hooks are recognized by their
 //! command (`…groundstation… hook <adapter>`), so reinstalling replaces them
 //! and uninstalling removes exactly them.
+
+pub mod managed;
 
 use std::path::{Path, PathBuf};
 

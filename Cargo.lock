@@ -543,6 +543,7 @@ dependencies = [
  "groundstation-adapter-claude-code",
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
+ "groundstation-adapter-pi",
  "groundstation-hooks-json",
  "groundstation-schema",
  "gsd",
@@ -585,6 +586,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "groundstation-hooks-json",
+ "groundstation-schema",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "groundstation-adapter-pi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "groundstation-hooks-json",
  "groundstation-schema",
  "serde_json",
  "tempfile",
@@ -623,6 +638,7 @@ dependencies = [
  "groundstation-adapter-claude-code",
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
+ "groundstation-adapter-pi",
  "groundstation-schema",
  "hex",
  "http-body-util",

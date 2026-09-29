@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use groundstation_hooks_json::managed;
 
 const TEMPLATE: &str = include_str!("plugin.js");
 /// Marks a plugin file as ours, so reconnect and disconnect never touch
@@ -70,48 +71,24 @@ pub fn config_dir() -> PathBuf {
 
 /// The plugin source for a given gsd base URL and `groundstation` binary.
 pub fn render(gsd_url: &str, groundstation: &Path) -> String {
-    let quote = |s: &str| serde_json::to_string(s).expect("strings serialize");
-    TEMPLATE
-        .replace("\"__GSD_URL__\"", &quote(gsd_url))
-        .replace(
-            "\"__GROUNDSTATION__\"",
-            &quote(&groundstation.to_string_lossy()),
-        )
+    managed::render(
+        TEMPLATE,
+        &[
+            ("GSD_URL", gsd_url),
+            ("GROUNDSTATION", &groundstation.to_string_lossy()),
+        ],
+    )
 }
 
 /// Writes the plugin to `path`. Returns `true` if it replaced an earlier
 /// Ground Station plugin. Refuses to overwrite a file that isn't ours.
 pub fn install(path: &Path, source: &str) -> Result<bool> {
-    let replaced = match std::fs::read_to_string(path) {
-        Ok(existing) if existing.contains(MARKER) => true,
-        Ok(_) => bail!(
-            "{} exists and wasn't written by Ground Station; not overwriting it",
-            path.display()
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    std::fs::write(path, source).with_context(|| format!("writing {}", path.display()))?;
-    Ok(replaced)
+    managed::install(path, source, MARKER)
 }
 
 /// Removes the plugin at `path` if it is ours. Returns whether it was removed.
 pub fn uninstall(path: &Path) -> Result<bool> {
-    match std::fs::read_to_string(path) {
-        Ok(existing) if existing.contains(MARKER) => {
-            std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
-            Ok(true)
-        }
-        Ok(_) => bail!(
-            "{} wasn't written by Ground Station; leaving it",
-            path.display()
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+    managed::uninstall(path, MARKER)
 }
 
 /// Checks `opencode --version` output (`opencode v2.0.19`) against
@@ -169,22 +146,6 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(forwarded.matches("\",").count(), EVENTS.len());
-    }
-
-    #[test]
-    fn install_and_uninstall_only_touch_our_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("plugins/groundstation.js");
-        let source = render("http://127.0.0.1:4318", Path::new("/bin/groundstation"));
-        assert!(!install(&path, &source).unwrap());
-        assert!(install(&path, &source).unwrap());
-        assert!(uninstall(&path).unwrap());
-        assert!(!uninstall(&path).unwrap());
-
-        std::fs::write(&path, "export default {}").unwrap();
-        assert!(install(&path, &source).is_err());
-        assert!(uninstall(&path).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "export default {}");
     }
 
     #[test]
