@@ -1,0 +1,165 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* surfaces */
+  --color-bg: #0a0a0b;
+  --color-bg-1: #0e0f11;
+  --color-bg-2: #131417;
+  --color-bg-3: #191a1e;
+  --color-bg-4: #202126;
+
+  /* lines */
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-2: rgba(255, 255, 255, 0.13);
+  --color-line-3: rgba(255, 255, 255, 0.22);
+
+  /* text */
+  --color-fg: #ededef;
+  --color-fg-2: #a4a5ab;
+  --color-fg-3: #6f7076;
+  --color-fg-4: #4b4c52;
+
+  /* telemetry semantics */
+  --color-model: #3ee0c0;
+  --color-tool: #f5b83d;
+  --color-agent: #c39cf7;
+  --color-user: #ededef;
+  --color-ok: #58d68d;
+  --color-warn: #ff9f43;
+  --color-err: #ff6b6b;
+
+  --color-accent: #3ee0c0;
+  --color-accent-fg: #06110f;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+@layer base {
+  html {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "ss03", "calt";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+  ::selection {
+    background: rgba(62, 224, 192, 0.25);
+    color: #fff;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  h1, h2, h3, h4 {
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+  p { text-wrap: pretty; }
+  button { font: inherit; }
+}
+
+@utility tnum {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum", "lnum";
+}
+
+@utility mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero", "calt";
+  letter-spacing: -0.01em;
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-fg-3);
+}
+
+@utility hairline {
+  border-color: var(--color-line);
+}
+
+/* Subtle dot grid used as canvas texture */
+@utility grid-dots {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+@utility grid-lines {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+@utility mask-fade-y {
+  mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+}
+
+@utility mask-fade-b {
+  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
+@utility mask-fade-x {
+  mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.7); }
+}
+@keyframes ring {
+  0% { transform: scale(0.6); opacity: 0.8; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+@keyframes marquee-y {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes dash {
+  to { stroke-dashoffset: 0; }
+}
+
+@utility animate-pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+@utility animate-ring { animation: ring 1.6s var(--ease-out-quart) infinite; }
+@utility animate-marquee-y { animation: marquee-y 28s linear infinite; }
+@utility animate-blink { animation: blink 1.1s steps(2, start) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-dot, .animate-ring, .animate-marquee-y, .animate-blink { animation: none !important; }
+}
+
+/* Thin scrollbars inside product panels */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent; }
+.scroll-thin::-webkit-scrollbar { height: 6px; width: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+
+/* Product-only additions */
+@layer base {
+  body { font-size: 13px; }
+  table { border-collapse: collapse; }
+}
+@utility num { font-variant-numeric: tabular-nums; text-align: right; }

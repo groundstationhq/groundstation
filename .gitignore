@@ -1,2 +1,3 @@
 /target
+*.groundstation-backup
 .DS_Store

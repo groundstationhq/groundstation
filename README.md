@@ -21,7 +21,7 @@
 
 <br>
 
-> **Pre-alpha.** The Cargo workspace is scaffolded (schema, daemon, CLI). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
+> **Pre-alpha.** The local slice works: `gsd` and the `groundstation` CLI capture Claude Code sessions end to end and show them in the terminal ([`docs/gsd.md`](./docs/gsd.md)). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
 
 <br>
 
@@ -144,12 +144,14 @@ groundstation/
 │   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
 │   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction)
 │   └── groundstation/          the `groundstation` CLI (login, connect, status)
+├── ui/                         trajectory viewer (Vite + React + TypeScript), see ui/README.md
 ├── assets/                     logo, banner, screenshots
+├── STYLEGUIDE.md               visual language, telemetry conventions, copy voice, code rules
 ├── product.md                  the product brief
 └── README.md
 ```
 
-Coming next, in this order: backend crates over ClickHouse, the `ui/` trajectory viewer, `adapters/claude-code/`, and `docs/`.
+Coming next, in this order: embedding `ui/dist` in `gsd`, backend crates over ClickHouse, `adapters/claude-code/` as a separate crate, and `docs/`.
 
 ```sh
 cargo build --workspace
@@ -185,6 +187,6 @@ Not open for contributions yet, but soon. Star or watch the repo to hear about t
 
 ## License
 
-Apache-2.0, declared at the workspace level. A `LICENSE` file lands with the first release.
+Apache-2.0. See [`LICENSE`](./LICENSE).
 
 <p align="center"><sub>Every agent leaves a trajectory. Make it observable.</sub></p>

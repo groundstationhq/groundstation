@@ -1,0 +1,25 @@
+[package]
+name = "groundstation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+groundstation-schema = { version = "0.1.0", path = "../schema" }
+gsd = { version = "0.1.0", path = "../gsd" }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+toml = "1.1.6"
+uuid = { version = "1.26.1", features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
