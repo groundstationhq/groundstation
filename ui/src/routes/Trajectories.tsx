@@ -31,7 +31,11 @@ const COLS: Array<[string, string]> = [
   ["Duration", "text-right whitespace-nowrap"],
   ["Turns", "hidden lg:table-cell text-right"],
   ["Tools", "hidden md:table-cell text-right"],
-  ["Tokens", "hidden sm:table-cell text-right"],
+  ["Tokens", "hidden sm:table-cell lg:hidden text-right"],
+  ["In", "hidden lg:table-cell text-right"],
+  ["Cache w", "hidden lg:table-cell text-right"],
+  ["Cache r", "hidden lg:table-cell text-right"],
+  ["Out", "hidden lg:table-cell text-right"],
   ["Status", "text-right"],
 ];
 
@@ -48,12 +52,13 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
     ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running · ${rows.filter((r) => r.status === "idle" || r.status === "waiting").length} idle`],
     ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
     ["Median runtime", done.length ? fmtDur(median(done.map((r) => r.duration_ms))) : "—", ""],
-    ["Tokens", fmtTokens(rows.reduce((a, r) => a + totalTokens(r), 0)), ""],
+    ["Output tokens", fmtTokens(rows.reduce((a, r) => a + r.output_tokens, 0)), `${fmtTokens(rows.reduce((a, r) => a + r.input_tokens + r.cache_creation_tokens, 0))} uncached in`],
+    ["Cache read", fmtTokens(rows.reduce((a, r) => a + r.cache_read_tokens, 0)), "context re-read from cache"],
     ["Tool calls", fmtInt(rows.reduce((a, r) => a + r.tool_calls, 0)), ""],
     ["Tool errors", fmtInt(rows.reduce((a, r) => a + r.tool_errors, 0)), ""],
   ];
   return (
-    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
+    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4 lg:grid-cols-7">
       {cells.map(([k, v, d]) => (
         <div key={k} className="bg-bg-1 px-4 py-3">
           <div className="label text-[10px]">{k}</div>
@@ -91,11 +96,11 @@ export function Trajectories() {
         />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-line bg-bg-1 scroll-thin">
-          <table className="w-full min-w-[340px]">
+          <table className="w-full min-w-[340px] lg:min-w-[1040px]">
             <thead>
               <tr className="border-b border-line">
                 {COLS.map(([h, cls]) => (
-                  <th key={h} className={cx("label px-3 py-2 text-left text-[10px] font-normal first:pl-4 last:pr-4", cls)}>
+                  <th key={h} className={cx("label whitespace-nowrap px-3 py-2 text-left text-[10px] font-normal first:pl-4 last:pr-4", cls)}>
                     {h}
                   </th>
                 ))}
@@ -127,7 +132,11 @@ export function Trajectories() {
                       {r.tool_calls}
                       {r.tool_errors > 0 && <span className="ml-1 text-err">({r.tool_errors})</span>}
                     </td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])}>{fmtTokens(totalTokens(r))}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])} title="in + cache write + cache read + out">{fmtTokens(totalTokens(r))}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[8][1])}>{fmtTokens(r.input_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[9][1])}>{fmtTokens(r.cache_creation_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[10][1])}>{fmtTokens(r.cache_read_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[11][1])}>{fmtTokens(r.output_tokens)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 pr-4 text-right">
                       <span className={cx("mono inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
                     </td>

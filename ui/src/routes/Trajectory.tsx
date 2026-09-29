@@ -5,8 +5,8 @@ import { Empty } from "@/components/Shell";
 import { trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
-import { breakdown, buildRows, type Row } from "@/lib/spans";
-import { attr, totalTokens, type Event, type TrajectoryDetail } from "@/lib/types";
+import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
+import { attr, type Event, type TrajectoryDetail } from "@/lib/types";
 import { useReducedMotion } from "@/lib/hooks";
 
 const CONTENT_KEYS = new Set<string>([attr.PROMPT_TEXT, attr.TOOL_INPUT, attr.TOOL_OUTPUT, attr.SHELL_COMMAND, attr.SEARCH_PATTERN, attr.ERROR_MESSAGE, attr.NOTIFICATION_MESSAGE]);
@@ -130,7 +130,16 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
       <span className={cx("mono truncate", r.kind === "user" ? "text-fg-2" : "text-fg")} style={{ paddingLeft: r.depth * 10 }}>{r.name}</span>
       <span className={cx("mono hidden truncate text-fg-2 sm:block", r.kind === "user" && "italic text-fg")}>{r.detail}</span>
       <span className="mono flex items-center justify-end gap-2 text-[11px] text-fg-3">
-        {r.dims.map((d, i) => <span key={i} className={cx("hidden md:inline", d.startsWith("exit") && !d.endsWith(" 0") && "text-err")}>{d}</span>)}
+        {r.kind === "model" && r.tokens ? (
+          <span className="flex items-center gap-2.5 text-[10.5px] text-fg-4">
+            <span className="hidden lg:inline">in <span className="text-fg-3">{fmtK(r.tokens.in)}</span></span>
+            <span className="hidden lg:inline">cache-w <span className="text-fg-3">{fmtK(r.tokens.cacheWrite)}</span></span>
+            <span className="hidden md:inline">cache-r <span className="text-fg-3">{fmtK(r.tokens.cacheRead)}</span></span>
+            <span>out <span className="text-fg-2">{fmtK(r.tokens.out)}</span></span>
+          </span>
+        ) : (
+          r.dims.map((d, i) => <span key={i} className={cx("hidden md:inline", d.startsWith("exit") && !d.endsWith(" 0") && "text-err")}>{d}</span>)
+        )}
         {isLong && (
           <span className="hidden h-1.5 overflow-hidden rounded-full bg-bg-4 sm:inline-block" style={{ width: barW }} aria-hidden>
             <span className={cx("block h-full rounded-full", r.failed ? "bg-err" : "bg-tool", r.running && "animate-pulse-dot")} style={{ width: "100%" }} />
@@ -158,8 +167,10 @@ function Header({ d }: { d: TrajectoryDetail }) {
     ["turns", String(d.user_turns)],
     ["model calls", String(d.model_calls)],
     ["tool calls", d.tool_errors ? `${d.tool_calls} · ${d.tool_errors} failed` : String(d.tool_calls)],
-    ["tokens", fmtTokens(totalTokens(d))],
+    ["in", fmtTokens(d.input_tokens)],
+    ["cache write", fmtTokens(d.cache_creation_tokens)],
     ["cache read", fmtTokens(d.cache_read_tokens)],
+    ["out", fmtTokens(d.output_tokens)],
     ["events", String(d.event_count)],
   ];
   return (
@@ -177,9 +188,9 @@ function Header({ d }: { d: TrajectoryDetail }) {
         </div>
         <span className={cx("mono inline-flex items-center gap-1.5 text-[12px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
       </div>
-      <dl className="mono mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4 lg:grid-cols-7">
+      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-9">
         {stats.map(([k, v]) => (
-          <div key={k} className="bg-bg-1 px-3 py-2 last:col-span-2 sm:last:col-span-1 lg:last:col-span-1"><dt className="label text-[10px]">{k}</dt><dd className="mt-0.5 text-[13px] text-fg">{v}</dd></div>
+          <div key={k} className="bg-bg-1 px-3 py-2"><dt className="label text-[10px]">{k}</dt><dd className="mt-0.5 text-[13px] text-fg">{v}</dd></div>
         ))}
       </dl>
     </div>

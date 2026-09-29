@@ -19,8 +19,7 @@ export interface Row {
   open: Event;
   close?: Event;
   depth: number; // 1 when part of a subagent sidechain
-  tokensIn?: number;
-  tokensOut?: number;
+  tokens?: { in: number; cacheWrite: number; cacheRead: number; out: number };
   exitCode?: number;
 }
 
@@ -97,10 +96,14 @@ export function buildRows(d: TrajectoryDetail): Row[] {
         break;
       }
       case "model.completed": {
-        const tin = (num(e, attr.GEN_AI_INPUT_TOKENS) ?? 0) + (num(e, attr.CACHE_READ_TOKENS) ?? 0) + (num(e, attr.CACHE_CREATION_TOKENS) ?? 0);
-        const tout = num(e, attr.GEN_AI_OUTPUT_TOKENS) ?? 0;
+        const tokens = {
+          in: num(e, attr.GEN_AI_INPUT_TOKENS) ?? 0,
+          cacheWrite: num(e, attr.CACHE_CREATION_TOKENS) ?? 0,
+          cacheRead: num(e, attr.CACHE_READ_TOKENS) ?? 0,
+          out: num(e, attr.GEN_AI_OUTPUT_TOKENS) ?? 0,
+        };
         const dur = num(e, attr.DURATION_MS) ?? null;
-        rows.push({ ...base, kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", durationMs: dur, dims: [`${fmtK(tin)} → ${fmtK(tout)}`], tokensIn: tin, tokensOut: tout });
+        rows.push({ ...base, kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", durationMs: dur, dims: [], tokens });
         break;
       }
       case "subagent.started": {
