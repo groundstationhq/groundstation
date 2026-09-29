@@ -121,7 +121,11 @@ async fn ingest_hook(
         ));
     }
     let ingestor = s.ingestor.clone();
-    let stored = blocking(move || ingestor.ingest_hook(&name, envelope)).await?;
+    let (stored, follow_up) = blocking(move || ingestor.ingest_hook(&name, envelope)).await?;
+    // Reply now: the hook sits in the agent's critical path (Codex caps some
+    // hooks at 3s), while a first transcript read can take much longer.
+    let ingestor = s.ingestor.clone();
+    tokio::task::spawn_blocking(move || ingestor.follow_up(follow_up));
     Ok(Json(IngestResponse { stored }))
 }
 
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         let envelope = json!({"id": Uuid::now_v7(), "observed_at": Utc::now(), "payload": {}});
-        let (status, body) = call(&app, "POST", "/v1/adapters/codex", host, Some(envelope)).await;
+        let (status, body) = call(&app, "POST", "/v1/adapters/nope", host, Some(envelope)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(
             body["error"].as_str().unwrap().contains("claude-code"),

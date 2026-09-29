@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 
 use groundstation_schema::{Adapter, Event, HookEnvelope, Normalized};
+use serde_json::Value;
 
 mod hooks;
 pub mod settings;
@@ -40,7 +41,13 @@ impl Adapter for ClaudeCode {
         hooks::normalize(envelope)
     }
 
-    fn parse_transcript_line(&self, trajectory_id: &str, line: &str) -> Option<Event> {
+    /// Claude Code lines are self-contained, so no state is kept.
+    fn parse_transcript_line(
+        &self,
+        trajectory_id: &str,
+        line: &str,
+        _: &mut Value,
+    ) -> Option<Event> {
         hooks::parse_transcript_line(trajectory_id, line)
     }
 

@@ -52,6 +52,14 @@ pub async fn run(config: Config) -> Result<()> {
     let pid_file = config.pid_file();
     std::fs::write(&pid_file, std::process::id().to_string())?;
 
+    let requeued = spool::requeue(&config.spool_dir(), &ingestor);
+    if requeued > 0 {
+        tracing::info!(
+            payloads = requeued,
+            "retrying payloads an older gsd couldn't handle"
+        );
+    }
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = tokio::task::JoinSet::new();
     tasks.spawn(drain_spool(

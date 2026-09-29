@@ -1,6 +1,6 @@
 [package]
-name = "groundstation-adapter-claude-code"
-description = "Ground Station adapter for Claude Code: hook installation and telemetry normalization"
+name = "groundstation-adapter-codex"
+description = "Ground Station adapter for OpenAI Codex: hook installation and telemetry normalization"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

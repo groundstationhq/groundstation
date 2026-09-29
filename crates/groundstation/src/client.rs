@@ -19,8 +19,9 @@ impl Client {
     }
 
     /// Hooks sit in the agent's critical path, so they give up fast and spool.
+    /// Codex kills `SessionEnd` and `Interrupt` hooks after 3 seconds.
     pub fn for_hooks(config: &Config) -> Result<Self> {
-        Self::with_timeouts(config, Duration::from_millis(250), Duration::from_secs(3))
+        Self::with_timeouts(config, Duration::from_millis(250), Duration::from_secs(2))
     }
 
     fn with_timeouts(config: &Config, connect: Duration, total: Duration) -> Result<Self> {

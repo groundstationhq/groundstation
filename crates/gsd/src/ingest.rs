@@ -1,13 +1,15 @@
 //! Everything an event goes through between arriving and being stored.
 //! All methods block (SQLite, file and git I/O); call them off the async runtime.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use groundstation_adapter_claude_code::ClaudeCode;
+use groundstation_adapter_codex::Codex;
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
 use crate::api::SpoolItem;
@@ -16,7 +18,7 @@ use crate::store::{NewEvent, Store};
 
 /// Every adapter this build of gsd understands.
 pub fn builtin_adapters() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(ClaudeCode)]
+    vec![Box::new(ClaudeCode), Box::new(Codex)]
 }
 
 struct Registered {
@@ -30,6 +32,21 @@ pub struct Ingestor {
     privacy: Privacy,
     host: String,
     adapters: Vec<Registered>,
+    /// Transcripts being read right now, and whether another read was
+    /// requested meanwhile. Concurrent hooks for one session coalesce into
+    /// one reader instead of re-reading the same bytes in parallel.
+    syncing: Mutex<HashMap<String, bool>>,
+}
+
+/// Work left after a hook's events are stored: reading transcripts and
+/// resolving the repository. It can be slow (a long transcript's first read,
+/// git), so the HTTP handler runs it after replying to the hook.
+#[must_use = "call Ingestor::follow_up"]
+pub struct FollowUp {
+    adapter: &'static str,
+    trajectory: String,
+    transcripts: Vec<String>,
+    cwds: Vec<(String, String)>,
 }
 
 impl Ingestor {
@@ -50,6 +67,7 @@ impl Ingestor {
             privacy,
             host: gethostname::gethostname().to_string_lossy().into_owned(),
             adapters,
+            syncing: Mutex::default(),
         }
     }
 
@@ -85,9 +103,9 @@ impl Ingestor {
         Ok(stored)
     }
 
-    /// Normalizes a hook payload with the named adapter, stores the events,
-    /// then reads any transcripts the payload points at.
-    pub fn ingest_hook(&self, adapter: &str, envelope: HookEnvelope) -> Result<usize> {
+    /// Normalizes a hook payload with the named adapter and stores the
+    /// events. Returns how many were stored and the [`FollowUp`] to run next.
+    pub fn ingest_hook(&self, adapter: &str, envelope: HookEnvelope) -> Result<(usize, FollowUp)> {
         let Some(registered) = self.adapter(adapter) else {
             bail!("unknown adapter {adapter:?}");
         };
@@ -96,23 +114,76 @@ impl Ingestor {
             bail!("payload not recognized by the {adapter} adapter");
         };
         let cwds = raw_cwds(&normalized.events);
-        let mut stored = self.store_events(normalized.events, Some(&envelope.payload))?;
-        for path in normalized.transcripts {
-            match self.sync_transcript(registered, &trajectory, Path::new(&path)) {
-                Ok(n) => stored += n,
-                Err(e) => tracing::debug!(%path, "transcript not read: {e:#}"),
-            }
+        let stored = self.store_events(normalized.events, Some(&envelope.payload))?;
+        let follow_up = FollowUp {
+            adapter: registered.adapter.name(),
+            trajectory,
+            transcripts: normalized.transcripts,
+            cwds,
+        };
+        Ok((stored, follow_up))
+    }
+
+    /// [`Self::ingest_hook`] and its [`FollowUp`], in one call.
+    pub fn ingest_hook_now(&self, adapter: &str, envelope: HookEnvelope) -> Result<usize> {
+        let (stored, follow_up) = self.ingest_hook(adapter, envelope)?;
+        Ok(stored + self.follow_up(follow_up))
+    }
+
+    /// Reads the transcripts a hook pointed at and resolves the repository.
+    /// Returns how many transcript events were stored. Never fails: this runs
+    /// detached, and the next hook retries anything that went wrong.
+    pub fn follow_up(&self, f: FollowUp) -> usize {
+        let Some(registered) = self.adapter(f.adapter) else {
+            return 0;
+        };
+        let mut stored = 0;
+        for path in &f.transcripts {
+            stored += self.sync_transcript_coalesced(registered, &f.trajectory, path);
         }
-        for (id, cwd) in cwds {
-            self.enrich_repository(&id, &cwd);
+        for (id, cwd) in &f.cwds {
+            self.enrich_repository(id, cwd);
         }
-        Ok(stored)
+        stored
     }
 
     pub fn ingest_spooled(&self, item: SpoolItem) -> Result<usize> {
         match item {
-            SpoolItem::Hook { adapter, envelope } => self.ingest_hook(&adapter, envelope),
+            SpoolItem::Hook { adapter, envelope } => self.ingest_hook_now(&adapter, envelope),
             SpoolItem::Batch(batch) => self.ingest_batch(batch),
+        }
+    }
+
+    /// Reads a transcript unless another thread already is, in which case
+    /// that thread reads again when it finishes, so no appended line is missed.
+    fn sync_transcript_coalesced(
+        &self,
+        registered: &Registered,
+        trajectory: &str,
+        path: &str,
+    ) -> usize {
+        let lock = || self.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut syncing = lock();
+            if let Some(again) = syncing.get_mut(path) {
+                *again = true;
+                return 0;
+            }
+            syncing.insert(path.to_string(), false);
+        }
+        let mut stored = 0;
+        loop {
+            match self.sync_transcript(registered, trajectory, Path::new(path)) {
+                Ok(n) => stored += n,
+                Err(e) => tracing::debug!(%path, "transcript not read: {e:#}"),
+            }
+            let mut syncing = lock();
+            if syncing.get(path) == Some(&true) {
+                syncing.insert(path.to_string(), false);
+                continue;
+            }
+            syncing.remove(path);
+            return stored;
         }
     }
 
@@ -153,9 +224,11 @@ impl Ingestor {
         let key = path.to_string_lossy();
         let mut file = std::fs::File::open(&path)?;
         let len = file.metadata()?.len();
-        let mut offset = self.store.transcript_offset(&key)?;
+        let (mut offset, mut state) = self.store.transcript_cursor(&key)?;
         if len < offset {
-            offset = 0; // truncated or replaced
+            // Truncated or replaced: start over.
+            offset = 0;
+            state = serde_json::Value::Null;
         }
         if len == offset {
             return Ok(0);
@@ -169,11 +242,15 @@ impl Ingestor {
         };
         let events: Vec<Event> = String::from_utf8_lossy(&buf[..end])
             .lines()
-            .filter_map(|line| registered.adapter.parse_transcript_line(trajectory, line))
+            .filter_map(|line| {
+                registered
+                    .adapter
+                    .parse_transcript_line(trajectory, line, &mut state)
+            })
             .collect();
         let stored = self.store_events(events, None)?;
         self.store
-            .set_transcript_offset(&key, offset + end as u64 + 1)?;
+            .set_transcript_cursor(&key, offset + end as u64 + 1, &state)?;
         Ok(stored)
     }
 
@@ -295,8 +372,12 @@ mod tests {
                 "prompt": "deploy with token ghp_0123456789abcdefghijklmnopqrstuvwxyz",
             }),
         };
-        assert_eq!(ing.ingest_hook("claude-code", envelope.clone()).unwrap(), 1);
-        assert_eq!(ing.ingest_hook("claude-code", envelope).unwrap(), 0);
+        assert_eq!(
+            ing.ingest_hook_now("claude-code", envelope.clone())
+                .unwrap(),
+            1
+        );
+        assert_eq!(ing.ingest_hook_now("claude-code", envelope).unwrap(), 0);
         let (summary, events) = ing.store.trajectory("s1").unwrap().unwrap();
         assert_eq!(
             summary.title.as_deref(),
@@ -313,7 +394,7 @@ mod tests {
             observed_at: Utc::now(),
             payload: json!({}),
         };
-        let err = ingestor().ingest_hook("codex", envelope).unwrap_err();
+        let err = ingestor().ingest_hook_now("nope", envelope).unwrap_err();
         assert!(err.to_string().contains("unknown adapter"), "{err}");
     }
 
@@ -337,12 +418,67 @@ mod tests {
             observed_at: Utc::now(),
             payload: json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": cwd}),
         };
-        ing.ingest_hook("claude-code", envelope).unwrap();
+        ing.ingest_hook_now("claude-code", envelope).unwrap();
         let (summary, events) = ing.store.trajectory("s1").unwrap().unwrap();
         assert_eq!(summary.branch.as_deref(), Some("fix/checkout"));
         let stored_repo = summary.repository.unwrap();
         assert!(stored_repo.starts_with("sha256:"), "{stored_repo}");
         assert_eq!(summary.cwd.as_deref(), Some(stored_repo.as_str()));
         assert!(!serde_json::to_string(&events).unwrap().contains(&cwd));
+    }
+
+    #[test]
+    fn codex_rollout_state_survives_between_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let ing = ingestor().with_transcript_root(dir.path());
+        let rollout = dir.path().join("rollout.jsonl");
+        let line = |v: serde_json::Value| v.to_string() + "\n";
+        std::fs::write(
+            &rollout,
+            line(json!({"timestamp": "2026-09-28T14:03:11Z", "type": "session_meta", "payload": {"cli_version": "0.155.0"}}))
+                + &line(json!({"timestamp": "2026-09-28T14:03:11Z", "type": "turn_context", "payload": {"model": "gpt-6-codex"}})),
+        )
+        .unwrap();
+        let hook = |name: &str| HookEnvelope {
+            id: Uuid::now_v7(),
+            observed_at: Utc::now(),
+            payload: json!({"session_id": "cx", "hook_event_name": name, "transcript_path": rollout}),
+        };
+        ing.ingest_hook_now("codex", hook("SessionStart")).unwrap();
+
+        // The usage record arrives in a later read; the model comes from saved state.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout)
+            .unwrap();
+        write!(
+            f,
+            "{}",
+            line(json!({"timestamp": "2026-09-28T14:03:13Z", "type": "token_usage_record", "payload": {
+                "session_id": "cx", "thread_id": "cx", "response_id": "resp_1",
+                "usage": {"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 7}}}))
+        )
+        .unwrap();
+        assert_eq!(ing.ingest_hook_now("codex", hook("Stop")).unwrap(), 2);
+
+        let (summary, events) = ing.store.trajectory("cx").unwrap().unwrap();
+        assert_eq!(summary.agent, "codex");
+        assert_eq!(summary.agent_version.as_deref(), Some("0.155.0"));
+        assert_eq!(
+            (
+                summary.input_tokens,
+                summary.cache_read_tokens,
+                summary.output_tokens
+            ),
+            (40, 60, 7)
+        );
+        let model = events
+            .iter()
+            .find(|e| e.kind == groundstation_schema::EventKind::ModelCompleted)
+            .unwrap();
+        assert_eq!(
+            model.get(attr::GEN_AI_RESPONSE_MODEL),
+            Some(&json!("gpt-6-codex"))
+        );
     }
 }

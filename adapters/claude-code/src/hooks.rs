@@ -43,7 +43,7 @@ pub fn normalize(envelope: &HookEnvelope) -> Normalized {
             let mut ev = event(kind);
             ev.set(attr::SESSION_SOURCE, source);
             ev.set(attr::TRANSCRIPT_PATH, str_field(p, "transcript_path"));
-            ev.set("gen_ai.request.model", str_field(p, "model"));
+            ev.set(attr::GEN_AI_REQUEST_MODEL, str_field(p, "model"));
             vec![ev]
         }
         "SessionEnd" => {
@@ -130,7 +130,7 @@ pub fn normalize(envelope: &HookEnvelope) -> Normalized {
         "Notification" => {
             let mut ev = event(EventKind::AgentNotification);
             ev.set(attr::NOTIFICATION_MESSAGE, str_field(p, "message"));
-            ev.set("gs.notification.type", str_field(p, "notification_type"));
+            ev.set(attr::NOTIFICATION_TYPE, str_field(p, "notification_type"));
             vec![ev]
         }
         other => vec![event(EventKind::Custom(format!(

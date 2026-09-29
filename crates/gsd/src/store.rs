@@ -15,7 +15,8 @@ use serde_json::Value;
 
 use crate::api::TrajectorySummary;
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE trajectories (
     id              TEXT PRIMARY KEY,
     agent           TEXT NOT NULL,
@@ -56,7 +57,10 @@ CREATE TABLE transcripts (
     path    TEXT PRIMARY KEY,
     offset  INTEGER NOT NULL
 );
-"#];
+"#,
+    // Adapter parse state carried between transcript reads (e.g. Codex's current model).
+    "ALTER TABLE transcripts ADD COLUMN state TEXT;",
+];
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -196,23 +200,31 @@ impl Store {
         Ok(())
     }
 
-    pub fn transcript_offset(&self, path: &str) -> Result<u64> {
-        let offset: Option<i64> = self
+    /// How far a transcript has been read, and the adapter's parse state at that point.
+    pub fn transcript_cursor(&self, path: &str) -> Result<(u64, Value)> {
+        let row: Option<(i64, Option<String>)> = self
             .conn()
             .query_row(
-                "SELECT offset FROM transcripts WHERE path = ?1",
+                "SELECT offset, state FROM transcripts WHERE path = ?1",
                 params![path],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        Ok(offset.unwrap_or(0) as u64)
+        let Some((offset, state)) = row else {
+            return Ok((0, Value::Null));
+        };
+        let state = state
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+        Ok((offset.max(0) as u64, state))
     }
 
-    pub fn set_transcript_offset(&self, path: &str, offset: u64) -> Result<()> {
+    pub fn set_transcript_cursor(&self, path: &str, offset: u64, state: &Value) -> Result<()> {
+        let state = (!state.is_null()).then(|| state.to_string());
         self.conn().execute(
-            "INSERT INTO transcripts (path, offset) VALUES (?1, ?2)
-             ON CONFLICT(path) DO UPDATE SET offset = excluded.offset",
-            params![path, offset as i64],
+            "INSERT INTO transcripts (path, offset, state) VALUES (?1, ?2, ?3)
+             ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, state = excluded.state",
+            params![path, offset as i64, state],
         )?;
         Ok(())
     }
@@ -332,7 +344,7 @@ fn upsert_trajectory(
         EventKind::AgentFailed => Some("failed"),
         EventKind::AgentCancelled => Some("cancelled"),
         EventKind::AgentPaused => Some("paused"),
-        EventKind::TurnCompleted => Some("idle"),
+        EventKind::TurnCompleted | EventKind::TurnInterrupted => Some("idle"),
         EventKind::AgentNotification => Some("waiting"),
         EventKind::AgentStarted
         | EventKind::AgentResumed

@@ -167,6 +167,7 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
                 ))
             }
             EventKind::TurnCompleted => Some("■ turn done".to_string()),
+            EventKind::TurnInterrupted => Some("■ turn interrupted".to_string()),
             EventKind::AgentStarted | EventKind::AgentResumed => {
                 let source = ev
                     .get(attr::SESSION_SOURCE)
@@ -194,11 +195,13 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
                 Some(format!("◇ {:<12} {kind}  {took}", ev.kind.as_str()))
             }
             EventKind::AgentNotification => {
-                let msg = ev
-                    .get(attr::NOTIFICATION_MESSAGE)
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                Some(format!("! {:<12} {}", "notification", one_line(msg, 90)))
+                let s = |k| ev.get(k).and_then(Value::as_str);
+                let text = match (s(attr::NOTIFICATION_MESSAGE), s(attr::GEN_AI_TOOL_NAME)) {
+                    (Some(msg), _) => one_line(msg, 90),
+                    (None, Some(tool)) => format!("permission requested for {tool}"),
+                    (None, None) => s(attr::NOTIFICATION_TYPE).unwrap_or("").to_string(),
+                };
+                Some(format!("! {:<12} {text}", "notification"))
             }
             EventKind::ContextCompacted => {
                 let trigger = ev

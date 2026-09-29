@@ -43,8 +43,17 @@ pub trait Adapter: Send + Sync {
 
     /// Translates one line of a transcript named in [`Normalized::transcripts`].
     /// Must be deterministic: the same line always yields the same event id.
-    fn parse_transcript_line(&self, trajectory_id: &str, line: &str) -> Option<Event> {
-        let _ = (trajectory_id, line);
+    ///
+    /// `state` is carried from line to line and persisted with the read
+    /// offset, for formats where one line depends on an earlier one (for
+    /// example, a model name announced once per turn). It starts as `null`.
+    fn parse_transcript_line(
+        &self,
+        trajectory_id: &str,
+        line: &str,
+        state: &mut Value,
+    ) -> Option<Event> {
+        let _ = (trajectory_id, line, state);
         None
     }
 

@@ -16,9 +16,11 @@ pub const GEN_AI_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
 pub const GEN_AI_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
 pub const GEN_AI_TOOL_NAME: &str = "gen_ai.tool.name";
 pub const GEN_AI_TOOL_CALL_ID: &str = "gen_ai.tool.call.id";
+pub const GEN_AI_REQUEST_MODEL: &str = "gen_ai.request.model";
 
 // Trajectory / session context.
 pub const SESSION_ID: &str = "gs.session.id";
+pub const TURN_ID: &str = "gs.turn.id";
 pub const SESSION_SOURCE: &str = "gs.session.source";
 pub const END_REASON: &str = "gs.end.reason";
 pub const CWD: &str = "gs.cwd";
@@ -33,6 +35,8 @@ pub const PROMPT_BYTES: &str = "gs.prompt.bytes";
 // Model calls.
 pub const CACHE_READ_TOKENS: &str = "gs.usage.cache_read_input_tokens";
 pub const CACHE_CREATION_TOKENS: &str = "gs.usage.cache_creation_input_tokens";
+/// Part of `gen_ai.usage.output_tokens` spent on reasoning, when reported separately.
+pub const REASONING_TOKENS: &str = "gs.usage.reasoning_output_tokens";
 pub const REQUEST_ID: &str = "gs.request.id";
 pub const MODEL_TOOL_USES: &str = "gs.model.tool_uses";
 
@@ -65,6 +69,10 @@ pub const SUBAGENT_ID: &str = "gs.subagent.id";
 pub const SUBAGENT_TYPE: &str = "gs.subagent.type";
 pub const COMPACTION_TRIGGER: &str = "gs.compaction.trigger";
 pub const NOTIFICATION_MESSAGE: &str = "gs.notification.message";
+pub const NOTIFICATION_TYPE: &str = "gs.notification.type";
+
+// Patches (a single edit that touches several files).
+pub const PATCH_FILES: &str = "gs.patch.files";
 
 /// Attributes that can contain user content.
 pub const CONTENT: &[&str] = &[

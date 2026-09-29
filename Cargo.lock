@@ -541,6 +541,8 @@ dependencies = [
  "chrono",
  "clap",
  "groundstation-adapter-claude-code",
+ "groundstation-adapter-codex",
+ "groundstation-hooks-json",
  "groundstation-schema",
  "gsd",
  "reqwest",
@@ -558,9 +560,31 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "groundstation-hooks-json",
  "groundstation-schema",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "groundstation-adapter-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "groundstation-hooks-json",
+ "groundstation-schema",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "groundstation-hooks-json"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -584,6 +608,7 @@ dependencies = [
  "flate2",
  "gethostname",
  "groundstation-adapter-claude-code",
+ "groundstation-adapter-codex",
  "groundstation-schema",
  "hex",
  "http-body-util",

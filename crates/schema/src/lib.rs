@@ -151,6 +151,7 @@ event_kinds! {
     AgentNotification => "agent.notification",
     TurnUser => "turn.user",
     TurnCompleted => "turn.completed",
+    TurnInterrupted => "turn.interrupted",
     ModelStarted => "model.started",
     ModelCompleted => "model.completed",
     ToolStarted => "tool.started",

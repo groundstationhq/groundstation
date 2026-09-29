@@ -11,7 +11,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
-use groundstation_adapter_claude_code::{self as claude_code, settings as claude_settings};
+use groundstation_adapter_claude_code as claude_code;
+use groundstation_adapter_codex as codex;
+use groundstation_hooks_json::HookSet;
 use gsd::api::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
 use uuid::Uuid;
@@ -83,6 +85,8 @@ enum DaemonAction {
     Start,
     /// Stop a running gsd.
     Stop,
+    /// Stop and start gsd, e.g. after upgrading.
+    Restart,
     /// Run gsd in the foreground.
     Run,
     /// Same as `groundstation status`.
@@ -92,6 +96,7 @@ enum DaemonAction {
 #[derive(Clone, Copy, ValueEnum)]
 enum AgentName {
     ClaudeCode,
+    Codex,
 }
 
 impl AgentName {
@@ -99,29 +104,52 @@ impl AgentName {
     fn adapter(self) -> &'static str {
         match self {
             Self::ClaudeCode => claude_code::NAME,
+            Self::Codex => codex::NAME,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    fn hooks(self) -> HookSet {
+        match self {
+            Self::ClaudeCode => claude_code::settings::HOOKS,
+            Self::Codex => codex::settings::HOOKS,
+        }
+    }
+
+    /// The hook config file `connect` and `disconnect` edit.
+    fn config_path(self, scope: Scope) -> Result<PathBuf> {
+        match self {
+            Self::ClaudeCode => claude_code::settings::settings_path(match scope {
+                Scope::User => claude_code::settings::Scope::User,
+                Scope::Project => claude_code::settings::Scope::Project,
+                Scope::Local => claude_code::settings::Scope::Local,
+            }),
+            Self::Codex => codex::settings::hooks_path(match scope {
+                Scope::User => codex::settings::Scope::User,
+                Scope::Project => codex::settings::Scope::Project,
+                Scope::Local => {
+                    bail!("Codex has no local hooks file; use --scope project or --scope user")
+                }
+            }),
         }
     }
 }
 
-/// Which Claude Code settings file `connect` and `disconnect` edit.
+/// Which hook config `connect` and `disconnect` edit.
 #[derive(Clone, Copy, ValueEnum)]
 enum Scope {
-    /// ~/.claude/settings.json: every project on this machine.
+    /// Every project on this machine (~/.claude/settings.json, ~/.codex/hooks.json).
     User,
-    /// .claude/settings.json: this project, committed for the whole team.
+    /// This project, shared with the team (.claude/settings.json, .codex/hooks.json).
     Project,
-    /// .claude/settings.local.json: this project, just for you.
+    /// This project, just for you (.claude/settings.local.json). Claude Code only.
     Local,
-}
-
-impl From<Scope> for claude_settings::Scope {
-    fn from(scope: Scope) -> Self {
-        match scope {
-            Scope::User => Self::User,
-            Scope::Project => Self::Project,
-            Scope::Local => Self::Local,
-        }
-    }
 }
 
 fn main() -> ExitCode {
@@ -152,29 +180,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let config = Config::load(config_path)?;
     match cli.command {
         Command::Connect {
-            agent: AgentName::ClaudeCode,
+            agent,
             scope,
             dry_run,
             no_start,
-        } => connect_claude_code(&config, config_path, scope, dry_run, no_start),
-        Command::Disconnect {
-            agent: AgentName::ClaudeCode,
-            scope,
-        } => {
-            let path = claude_settings::settings_path(scope.into())?;
-            let mut settings = claude_settings::read(&path)?;
-            let removed = claude_settings::uninstall(&mut settings);
+        } => connect(&config, config_path, agent, scope, dry_run, no_start),
+        Command::Disconnect { agent, scope } => {
+            let path = agent.config_path(scope)?;
+            let mut settings = groundstation_hooks_json::read(&path)?;
+            let removed = agent.hooks().uninstall(&mut settings);
+            let shown = render::tilde(&path.to_string_lossy());
             if removed == 0 {
-                println!(
-                    "No Ground Station hooks in {}",
-                    render::tilde(&path.to_string_lossy())
-                );
+                println!("No Ground Station hooks in {shown}");
             } else {
-                claude_settings::write(&path, &settings)?;
-                println!(
-                    "Removed {removed} hooks from {}",
-                    render::tilde(&path.to_string_lossy())
-                );
+                groundstation_hooks_json::write(&path, &settings)?;
+                println!("Removed {removed} hooks from {shown}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -193,6 +213,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             action: DaemonAction::Stop,
         } => block_on(stop_daemon(&config)),
         Command::Daemon {
+            action: DaemonAction::Restart,
+        } => block_on(async {
+            stop_daemon(&config).await?;
+            start_daemon(&config, config_path).await
+        }),
+        Command::Daemon {
             action: DaemonAction::Status,
         }
         | Command::Status => block_on(status(&config)),
@@ -202,7 +228,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else if rows.is_empty() {
                 println!(
-                    "No trajectories yet. Connect an agent with `groundstation connect claude-code`."
+                    "No trajectories yet. Connect an agent with `groundstation connect claude-code` or `groundstation connect codex`."
                 );
             } else {
                 print!("{}", render::trajectory_table(&rows));
@@ -274,44 +300,80 @@ fn hook(config_path: Option<PathBuf>, agent: AgentName) -> Result<()> {
     Ok(())
 }
 
-fn connect_claude_code(
+fn connect(
     config: &Config,
     config_path: Option<&Path>,
+    agent: AgentName,
     scope: Scope,
     dry_run: bool,
     no_start: bool,
 ) -> Result<ExitCode> {
     let exe = std::env::current_exe().context("locating the groundstation binary")?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    let path = claude_settings::settings_path(scope.into())?;
-    let mut settings = claude_settings::read(&path)?;
-    claude_settings::install(&mut settings, &claude_settings::hook_command(&exe))?;
+    let hooks = agent.hooks();
+    let path = agent.config_path(scope)?;
+    let mut settings = groundstation_hooks_json::read(&path)?;
+    hooks.install(&mut settings, &hooks.command(&exe))?;
     if dry_run {
         println!("{}", serde_json::to_string_pretty(&settings)?);
         return Ok(ExitCode::SUCCESS);
     }
-    let backup = claude_settings::write(&path, &settings)?;
+    let backup = groundstation_hooks_json::write(&path, &settings)?;
 
-    println!("Connected Claude Code to Ground Station");
-    println!("  settings  {}", render::tilde(&path.to_string_lossy()));
+    println!("Connected {} to Ground Station", agent.title());
+    println!("  hooks in  {}", render::tilde(&path.to_string_lossy()));
     if let Some(backup) = backup {
         println!("  backup    {}", render::tilde(&backup.to_string_lossy()));
     }
-    let events: Vec<&str> = claude_settings::HOOK_EVENTS
-        .iter()
-        .map(|(e, _)| *e)
-        .collect();
-    println!("  hooks     {}", events.join(", "));
+    let events: Vec<&str> = hooks.events.iter().map(|h| h.event).collect();
+    println!("  events    {}", events.join(", "));
     println!();
     if no_start {
         println!(
             "Start the daemon with `groundstation daemon start`; until then events are spooled to disk."
         );
     } else {
-        block_on(start_daemon(config, config_path))?;
+        block_on(ensure_daemon_for(config, config_path, agent))?;
     }
-    println!("New Claude Code sessions will appear in `groundstation trajectories`.");
+    if let AgentName::Codex = agent {
+        println!();
+        println!("Codex runs new hooks only after you trust them: open Codex, run /hooks,");
+        println!("and trust the `groundstation hook codex` entries (once per change).");
+    }
+    println!(
+        "New {} sessions will appear in `groundstation trajectories`.",
+        agent.title()
+    );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Adapters this CLI can connect that the running gsd doesn't know: it
+/// predates them and must be restarted to accept their hooks.
+fn missing_adapters(health: &gsd::api::Health) -> Vec<&'static str> {
+    AgentName::value_variants()
+        .iter()
+        .map(|a| a.adapter())
+        .filter(|a| !health.adapters.iter().any(|h| h == a))
+        .collect()
+}
+
+/// Starts gsd, or restarts it if the running one can't accept `agent`'s hooks.
+async fn ensure_daemon_for(
+    config: &Config,
+    config_path: Option<&Path>,
+    agent: AgentName,
+) -> Result<ExitCode> {
+    if let Ok(health) = Client::new(config)?.health().await
+        && !health.adapters.iter().any(|a| a == agent.adapter())
+    {
+        println!(
+            "gsd (pid {}) predates {} support; restarting it.",
+            health.pid,
+            agent.title()
+        );
+        stop_daemon(config).await?;
+    }
+    start_daemon(config, config_path).await
 }
 
 async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<ExitCode> {
@@ -321,6 +383,13 @@ async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<Exi
             "gsd is already running (pid {}) on {}",
             health.pid, config.daemon.listen
         );
+        let missing = missing_adapters(&health);
+        if !missing.is_empty() {
+            println!(
+                "  it doesn't know {}; run `groundstation daemon restart` to load this build",
+                missing.join(", ")
+            );
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -401,6 +470,13 @@ async fn status(config: &Config) -> Result<ExitCode> {
         "gsd {} running (pid {}) on {}",
         health.version, health.pid, config.daemon.listen
     );
+    let missing = missing_adapters(&health);
+    if !missing.is_empty() {
+        println!(
+            "  ⚠ outdated: doesn't accept {} hooks (they wait on disk); run `groundstation daemon restart`",
+            missing.join(", ")
+        );
+    }
     println!("  schema    {}", health.schema);
     println!("  data      {}", render::tilde(&health.data_dir));
     println!(

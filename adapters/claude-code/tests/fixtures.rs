@@ -41,9 +41,10 @@ fn every_installed_hook_has_a_fixture() {
                 .into_owned()
         })
         .collect();
-    for (event, _) in settings::HOOK_EVENTS {
+    for spec in settings::HOOKS.events {
+        let event = spec.event;
         assert!(
-            on_disk.contains(*event),
+            on_disk.contains(event),
             "missing tests/fixtures/hooks/{event}.json"
         );
     }
@@ -117,7 +118,7 @@ fn transcript_yields_one_event_per_model_response() {
     let text = std::fs::read_to_string(fixtures().join("transcript.jsonl")).unwrap();
     let events: Vec<_> = text
         .lines()
-        .filter_map(|line| ClaudeCode.parse_transcript_line(SESSION, line))
+        .filter_map(|line| ClaudeCode.parse_transcript_line(SESSION, line, &mut Value::Null))
         .collect();
 
     // Two content-block lines of msg_01AbCdEf share an id; the daemon keeps
