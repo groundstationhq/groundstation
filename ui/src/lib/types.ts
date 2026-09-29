@@ -152,3 +152,8 @@ export function cacheHit(inTok: number, cacheWrite: number, cacheRead: number): 
   const prompt = inTok + cacheWrite + cacheRead;
   return prompt > 0 ? cacheRead / prompt : null;
 }
+
+/** Everything the model read: uncached input + cache write + cache read. */
+export function promptTokens(inTok: number, cacheWrite: number, cacheRead: number): number {
+  return inTok + cacheWrite + cacheRead;
+}

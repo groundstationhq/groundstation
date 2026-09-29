@@ -6,7 +6,7 @@ import { trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
 import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
-import { attr, cacheHit, type Event, type TrajectoryDetail } from "@/lib/types";
+import { attr, cacheHit, promptTokens, type Event, type TrajectoryDetail } from "@/lib/types";
 import { fmtHit, hitCls } from "@/routes/Trajectories";
 import { useReducedMotion } from "@/lib/hooks";
 
@@ -165,9 +165,10 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
       <span className="mono flex items-center justify-end gap-2 text-[11px] text-fg-3">
         {r.kind === "model" && r.tokens ? (
           <span className="flex items-center gap-2.5 text-[10.5px] text-fg-4">
-            <span className="hidden lg:inline">in <span className="text-fg-3">{fmtK(r.tokens.in)}</span></span>
-            <span className="hidden lg:inline">cache-w <span className="text-fg-3">{fmtK(r.tokens.cacheWrite)}</span></span>
-            <span className="hidden md:inline">cache-r <span className="text-fg-3">{fmtK(r.tokens.cacheRead)}</span></span>
+            <span className="hidden md:inline">prompt <span className="text-fg-2">{fmtK(promptTokens(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span></span>
+            <span className="hidden xl:inline">in·uncached <span className="text-fg-3">{fmtK(r.tokens.in)}</span></span>
+            <span className="hidden xl:inline">cache-w <span className="text-fg-3">{fmtK(r.tokens.cacheWrite)}</span></span>
+            <span className="hidden lg:inline">cache-r <span className="text-fg-3">{fmtK(r.tokens.cacheRead)}</span></span>
             <span>out <span className="text-fg-2">{fmtK(r.tokens.out)}</span></span>
             <span className={cx("w-9 text-right", hitCls(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead)))}>{fmtHit(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span>
           </span>
@@ -201,7 +202,8 @@ function Header({ d }: { d: TrajectoryDetail }) {
     ["turns", String(d.user_turns)],
     ["model calls", String(d.model_calls)],
     ["tool calls", d.tool_errors ? `${d.tool_calls} · ${d.tool_errors} failed` : String(d.tool_calls)],
-    ["in", fmtTokens(d.input_tokens)],
+    ["prompt", fmtTokens(promptTokens(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens))],
+    ["in · uncached", fmtTokens(d.input_tokens)],
     ["cache write", fmtTokens(d.cache_creation_tokens)],
     ["cache read", fmtTokens(d.cache_read_tokens)],
     ["out", fmtTokens(d.output_tokens)],
@@ -223,7 +225,7 @@ function Header({ d }: { d: TrajectoryDetail }) {
         </div>
         <span className={cx("mono inline-flex items-center gap-1.5 text-[12px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
       </div>
-      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-10">
+      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-11">
         {stats.map(([k, v]) => (
           <div key={k} className="bg-bg-1 px-3 py-2"><dt className="label text-[10px]">{k}</dt><dd className="mt-0.5 text-[13px] text-fg">{v}</dd></div>
         ))}

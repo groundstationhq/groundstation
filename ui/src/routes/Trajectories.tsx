@@ -3,7 +3,7 @@ import { Empty } from "@/components/Shell";
 import { trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
-import { cacheHit, totalTokens, type TrajectorySummary } from "@/lib/types";
+import { cacheHit, promptTokens, totalTokens, type TrajectorySummary } from "@/lib/types";
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -32,9 +32,10 @@ const COLS: Array<[string, string]> = [
   ["Turns", "hidden lg:table-cell text-right"],
   ["Tools", "hidden md:table-cell text-right"],
   ["Tokens", "hidden sm:table-cell lg:hidden text-right"],
-  ["In", "hidden lg:table-cell text-right"],
-  ["Cache w", "hidden lg:table-cell text-right"],
-  ["Cache r", "hidden lg:table-cell text-right"],
+  ["Prompt", "hidden lg:table-cell text-right"],
+  ["In · uncached", "hidden xl:table-cell text-right"],
+  ["Cache w", "hidden xl:table-cell text-right"],
+  ["Cache r", "hidden xl:table-cell text-right"],
   ["Out", "hidden lg:table-cell text-right"],
   ["Cache %", "hidden md:table-cell text-right"],
   ["Status", "text-right"],
@@ -64,7 +65,7 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
     ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running · ${rows.filter((r) => r.status === "idle" || r.status === "waiting").length} idle`],
     ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
     ["Median runtime", done.length ? fmtDur(median(done.map((r) => r.duration_ms))) : "—", ""],
-    ["Output tokens", fmtTokens(rows.reduce((a, r) => a + r.output_tokens, 0)), `${fmtTokens(rows.reduce((a, r) => a + r.input_tokens + r.cache_creation_tokens, 0))} uncached in`],
+    ["Prompt → out", `${fmtTokens(rows.reduce((a, r) => a + promptTokens(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens), 0))} → ${fmtTokens(rows.reduce((a, r) => a + r.output_tokens, 0))}`, `${fmtTokens(rows.reduce((a, r) => a + r.input_tokens, 0))} in · uncached`],
     ["Cache hit", fmtHit(cacheHit(rows.reduce((a, r) => a + r.input_tokens, 0), rows.reduce((a, r) => a + r.cache_creation_tokens, 0), rows.reduce((a, r) => a + r.cache_read_tokens, 0))), `${fmtTokens(rows.reduce((a, r) => a + r.cache_read_tokens, 0))} read from cache`],
     ["Tool calls", fmtInt(rows.reduce((a, r) => a + r.tool_calls, 0)), ""],
     ["Tool errors", fmtInt(rows.reduce((a, r) => a + r.tool_errors, 0)), ""],
@@ -108,7 +109,7 @@ export function Trajectories() {
         />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-line bg-bg-1 scroll-thin">
-          <table className="w-full min-w-[340px] lg:min-w-[1040px]">
+          <table className="w-full min-w-[340px] lg:min-w-[980px] xl:min-w-[1180px]">
             <thead>
               <tr className="border-b border-line">
                 {COLS.map(([h, cls]) => (
@@ -127,7 +128,7 @@ export function Trajectories() {
                       <a href={`#/t/${encodeURIComponent(r.id)}`} className="block truncate text-[13px] text-fg" onClick={(e) => e.stopPropagation()}>
                         {r.title ?? <span className="text-fg-3">(no prompt captured)</span>}
                       </a>
-                      <div className="mono mt-0.5 text-[10.5px] text-fg-4">{r.id}</div>
+                      <div className="mono mt-0.5 truncate text-[10.5px] text-fg-4">{r.id}</div>
                     </td>
                     <td className={cx("whitespace-nowrap px-3 py-2.5 text-[12.5px] text-fg-2", COLS[1][1])}>
                       <div className="flex items-center gap-1.5"><Glyph kind="agent" size={7} />{r.agent}</div>
@@ -144,12 +145,13 @@ export function Trajectories() {
                       {r.tool_calls}
                       {r.tool_errors > 0 && <span className="ml-1 text-err">({r.tool_errors})</span>}
                     </td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])} title="in + cache write + cache read + out">{fmtTokens(totalTokens(r))}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[8][1])}>{fmtTokens(r.input_tokens)}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[9][1])}>{fmtTokens(r.cache_creation_tokens)}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[10][1])}>{fmtTokens(r.cache_read_tokens)}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[11][1])}>{fmtTokens(r.output_tokens)}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px]", COLS[12][1], hitCls(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens)))}>{fmtHit(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens))}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])} title="prompt + out">{fmtTokens(totalTokens(r))}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[8][1])} title="in + cache write + cache read">{fmtTokens(promptTokens(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens))}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[9][1])}>{fmtTokens(r.input_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[10][1])}>{fmtTokens(r.cache_creation_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[11][1])}>{fmtTokens(r.cache_read_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[12][1])}>{fmtTokens(r.output_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px]", COLS[13][1], hitCls(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens)))}>{fmtHit(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens))}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 pr-4 text-right">
                       <span className={cx("mono inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
                     </td>
