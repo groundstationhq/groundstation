@@ -1,0 +1,19 @@
+{
+  "session_id": "0f6b1c4e-3a55-4f7e-9d7a-2c1f6b8e4d21",
+  "transcript_path": "/Users/dev/.claude/projects/-Users-dev-src-shop/0f6b1c4e-3a55-4f7e-9d7a-2c1f6b8e4d21.jsonl",
+  "cwd": "/Users/dev/src/shop",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01A2b3C4d5E6f7G8h9J0kLmN",
+  "tool_input": {
+    "command": "cargo test -p checkout",
+    "description": "Run checkout tests"
+  },
+  "tool_response": {
+    "stdout": "running 12 tests\ntest result: ok. 12 passed\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  }
+}

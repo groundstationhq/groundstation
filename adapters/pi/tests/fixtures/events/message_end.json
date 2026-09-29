@@ -1,0 +1,34 @@
+{
+  "event": {
+    "type": "message_end",
+    "message": {
+      "provider": "anthropic",
+      "model": "claude-opus-5-5",
+      "responseId": "msg_01AbCd",
+      "usage": {
+        "input": 12,
+        "output": 340,
+        "cacheRead": 18000,
+        "cacheWrite": 2100,
+        "reasoning": 60,
+        "totalTokens": 20452,
+        "cost": {
+          "input": 4e-05,
+          "output": 0.0051,
+          "cacheRead": 0.0054,
+          "cacheWrite": 0.0079,
+          "total": 0.01844
+        }
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1790604191500,
+      "toolCalls": 1
+    },
+    "durationMs": 3800
+  },
+  "event_id": "evt-message_end",
+  "at": 1790604195300,
+  "session_id": "019a3b7c-1d2e-7f40-8a55-6b7c8d9e0f1a",
+  "cwd": "/Users/dev/src/shop",
+  "version": "0.87.1"
+}

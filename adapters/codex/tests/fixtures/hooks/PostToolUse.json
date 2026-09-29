@@ -1,0 +1,18 @@
+{
+  "session_id": "019a2f3c-7b1e-7d40-9c55-5e8f1a2b3c4d",
+  "transcript_path": "/Users/dev/.codex/sessions/2026/09/28/rollout-2026-09-28T14-03-11-019a2f3c-7b1e-7d40-9c55-5e8f1a2b3c4d.jsonl",
+  "cwd": "/Users/dev/src/shop",
+  "model": "gpt-6-codex",
+  "hook_event_name": "PostToolUse",
+  "turn_id": "turn_01",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_use_id": "call_Bf3kQ9",
+  "tool_input": {
+    "command": "cargo test -p checkout"
+  },
+  "tool_response": {
+    "output": "running 12 tests\ntest checkout::retry ... FAILED\n",
+    "exit_code": 101
+  }
+}

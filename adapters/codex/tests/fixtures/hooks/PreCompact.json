@@ -1,0 +1,10 @@
+{
+  "session_id": "019a2f3c-7b1e-7d40-9c55-5e8f1a2b3c4d",
+  "transcript_path": "/Users/dev/.codex/sessions/2026/09/28/rollout-2026-09-28T14-03-11-019a2f3c-7b1e-7d40-9c55-5e8f1a2b3c4d.jsonl",
+  "cwd": "/Users/dev/src/shop",
+  "model": "gpt-6-codex",
+  "hook_event_name": "PreCompact",
+  "turn_id": "turn_01",
+  "permission_mode": "default",
+  "trigger": "auto"
+}

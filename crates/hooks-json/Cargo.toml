@@ -1,0 +1,19 @@
+[package]
+name = "groundstation-hooks-json"
+description = "Edits agent hook configs in the hooks.json shape shared by Claude Code and Codex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

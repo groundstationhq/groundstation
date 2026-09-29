@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/groundstationhq/groundstation/security/advisories/new
+    about: Private reporting for anything that leaks session data or bypasses redaction.

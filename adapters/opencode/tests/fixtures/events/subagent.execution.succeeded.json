@@ -1,0 +1,16 @@
+{
+  "event": {
+    "id": "evt_subagent_execution_succeeded",
+    "created": 1790604198100,
+    "type": "session.execution.succeeded",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK4R2T8Y6U1I3O5P7A9S0D"
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "version": "2.0.19"
+}

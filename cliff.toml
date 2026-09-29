@@ -1,0 +1,46 @@
+# git-cliff configuration: https://git-cliff.org/docs/configuration
+# CHANGELOG.md is generated, never hand-edited. Commit subjects are grouped
+# by their "Area:" prefix, so write them as "UI: …", "CLI: …", "gsd: …", "Add …", "Fix …".
+
+[changelog]
+header = """# Changelog
+
+All notable changes to Ground Station. Generated from commit history by [git-cliff](https://git-cliff.org); do not edit by hand.
+
+"""
+body = """
+{%- if version %}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{%- else %}
+## [Unreleased]
+{%- endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | trim | replace(from="UI: ", to="") | replace(from="CLI: ", to="") | replace(from="gsd: ", to="") | replace(from="Schema: ", to="") | replace(from="Docs: ", to="") | replace(from="README: ", to="") }}{% if commit.breaking %} **(breaking)**{% endif %}
+{%- endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "newest"
+topo_order = false
+commit_parsers = [
+  { message = "^Release v", skip = true },
+  { message = "^(CI|Ignore|Merge)\\b", skip = true },
+  { message = "^first commit$", skip = true },
+  { message = "^(Add|feat)\\b", group = "<!-- 0 -->Added" },
+  { message = "^(Fix|fix)\\b", group = "<!-- 1 -->Fixed" },
+  { message = "^UI:", group = "<!-- 2 -->UI" },
+  { message = "^(CLI|gsd|Daemon|Schema|Adapters?|Codex|Claude Code):", group = "<!-- 3 -->CLI and daemon" },
+  { message = "^(README|Docs|STYLEGUIDE)\\b", group = "<!-- 5 -->Documentation" },
+  { message = ".*", group = "<!-- 4 -->Changed" },
+]

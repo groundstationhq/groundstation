@@ -1,0 +1,20 @@
+name: Feature request
+description: Something Ground Station should capture, show, or do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What were you trying to understand about an agent run, and what got in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: A sketch is enough. If it's a new agent, link its hook or plugin documentation.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead

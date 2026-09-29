@@ -1,0 +1,128 @@
+name: Release
+
+# Builds both binaries for every supported target and publishes a GitHub Release
+# with checksums and the changelog section for that version as the notes.
+# Normally started by the "Prepare release" workflow; pushing a `vX.Y.Z` tag by
+# hand works too (the tag must match the workspace version).
+# install.sh resolves "latest" through the VERSION asset, so no API calls are needed.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # The UI is embedded into gsd by its build script when ui/dist exists.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the UI
+        working-directory: ui
+        run: npm ci && npm run build
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} -p groundstation -p gsd
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p groundstation -p gsd
+          fi
+      - name: Package
+        id: pkg
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          ws=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$version" != "$ws" ]; then echo "tag $tag does not match workspace version $ws" >&2; exit 1; fi
+          name="groundstation-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/groundstation" "target/${{ matrix.target }}/release/gsd" LICENSE NOTICE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: taiki-e/install-action@git-cliff
+      - name: Release notes from the changelog
+        run: |
+          set -eu
+          git cliff --current --strip all | sed '/^## \[/d' > notes.md
+          # Fall back to a one-liner if the tag has no grouped commits.
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          cat notes.md
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums and version marker
+        run: |
+          set -eu
+          cd assets
+          tag="${{ inputs.tag || github.ref_name }}"
+          printf '%s\n' "${tag#v}" > VERSION
+          sha256sum *.tar.gz > SHA256SUMS
+          ls -la
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            assets/*.tar.gz
+            assets/SHA256SUMS
+            assets/VERSION
+          body_path: notes.md
+          generate_release_notes: false

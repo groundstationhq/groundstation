@@ -1,0 +1,36 @@
+{
+  "event": {
+    "id": "evt_subagent_step_ended",
+    "created": 1790604198000,
+    "type": "session.step.ended",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK4R2T8Y6U1I3O5P7A9S0D",
+      "assistantMessageID": "msg_c1",
+      "finish": "stop",
+      "cost": 0.003,
+      "tokens": {
+        "input": 5,
+        "output": 80,
+        "reasoning": 0,
+        "cache": {
+          "read": 9000,
+          "write": 0
+        }
+      }
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "step": {
+    "model": {
+      "id": "claude-haiku-4-5",
+      "providerID": "anthropic"
+    },
+    "agent": "explore",
+    "started": 1790604196200
+  },
+  "version": "2.0.19"
+}

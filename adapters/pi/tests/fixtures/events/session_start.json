@@ -1,0 +1,11 @@
+{
+  "event": {
+    "type": "session_start",
+    "reason": "startup"
+  },
+  "event_id": "evt-session_start",
+  "at": 1790604191000,
+  "session_id": "019a3b7c-1d2e-7f40-8a55-6b7c8d9e0f1a",
+  "cwd": "/Users/dev/src/shop",
+  "version": "0.87.1"
+}

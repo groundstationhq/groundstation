@@ -1,0 +1,23 @@
+[package]
+name = "groundstation-adapter-claude-code"
+description = "Ground Station adapter for Claude Code: hook installation and telemetry normalization"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
+groundstation-hooks-json = { version = "0.1.0", path = "../../crates/hooks-json" }
+groundstation-schema = { version = "0.1.0", path = "../../crates/schema" }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+uuid = { version = "1.26.1", features = ["v5"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+uuid = { version = "1.26.1", features = ["v7"] }

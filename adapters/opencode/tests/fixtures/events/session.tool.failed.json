@@ -1,0 +1,24 @@
+{
+  "event": {
+    "id": "evt_session_tool_failed",
+    "created": 1790604243000,
+    "type": "session.tool.failed",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+      "assistantMessageID": "msg_a2",
+      "id": "call_read1",
+      "error": {
+        "type": "FileNotFound",
+        "message": "File not found: src/checkout/missing.rs"
+      },
+      "executed": true
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "tool": "read",
+  "version": "2.0.19"
+}
