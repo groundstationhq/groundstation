@@ -146,3 +146,9 @@ export function num(e: Event, key: string): number | undefined {
   const v = e.attributes[key];
   return typeof v === "number" ? v : undefined;
 }
+
+/** Share of prompt tokens served from the prompt cache. null when nothing was sent. */
+export function cacheHit(inTok: number, cacheWrite: number, cacheRead: number): number | null {
+  const prompt = inTok + cacheWrite + cacheRead;
+  return prompt > 0 ? cacheRead / prompt : null;
+}

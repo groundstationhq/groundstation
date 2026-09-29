@@ -3,7 +3,7 @@ import { Empty } from "@/components/Shell";
 import { trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
-import { totalTokens, type TrajectorySummary } from "@/lib/types";
+import { cacheHit, totalTokens, type TrajectorySummary } from "@/lib/types";
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -36,8 +36,20 @@ const COLS: Array<[string, string]> = [
   ["Cache w", "hidden lg:table-cell text-right"],
   ["Cache r", "hidden lg:table-cell text-right"],
   ["Out", "hidden lg:table-cell text-right"],
+  ["Cache %", "hidden md:table-cell text-right"],
   ["Status", "text-right"],
 ];
+
+export function fmtHit(h: number | null): string {
+  return h == null ? "—" : `${(h * 100).toFixed(h >= 0.995 ? 1 : 0)}%`;
+}
+/** Below 50% the prompt is mostly being re-sent; treat as degraded. */
+export function hitCls(h: number | null): string {
+  if (h == null) return "text-fg-4";
+  if (h < 0.5) return "text-warn";
+  if (h < 0.8) return "text-fg-2";
+  return "text-fg";
+}
 
 function median(xs: number[]): number {
   if (!xs.length) return 0;
@@ -53,7 +65,7 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
     ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
     ["Median runtime", done.length ? fmtDur(median(done.map((r) => r.duration_ms))) : "—", ""],
     ["Output tokens", fmtTokens(rows.reduce((a, r) => a + r.output_tokens, 0)), `${fmtTokens(rows.reduce((a, r) => a + r.input_tokens + r.cache_creation_tokens, 0))} uncached in`],
-    ["Cache read", fmtTokens(rows.reduce((a, r) => a + r.cache_read_tokens, 0)), "context re-read from cache"],
+    ["Cache hit", fmtHit(cacheHit(rows.reduce((a, r) => a + r.input_tokens, 0), rows.reduce((a, r) => a + r.cache_creation_tokens, 0), rows.reduce((a, r) => a + r.cache_read_tokens, 0))), `${fmtTokens(rows.reduce((a, r) => a + r.cache_read_tokens, 0))} read from cache`],
     ["Tool calls", fmtInt(rows.reduce((a, r) => a + r.tool_calls, 0)), ""],
     ["Tool errors", fmtInt(rows.reduce((a, r) => a + r.tool_errors, 0)), ""],
   ];
@@ -137,6 +149,7 @@ export function Trajectories() {
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[9][1])}>{fmtTokens(r.cache_creation_tokens)}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-3", COLS[10][1])}>{fmtTokens(r.cache_read_tokens)}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[11][1])}>{fmtTokens(r.output_tokens)}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px]", COLS[12][1], hitCls(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens)))}>{fmtHit(cacheHit(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens))}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 pr-4 text-right">
                       <span className={cx("mono inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
                     </td>

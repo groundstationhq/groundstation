@@ -6,7 +6,8 @@ import { trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
 import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
-import { attr, type Event, type TrajectoryDetail } from "@/lib/types";
+import { attr, cacheHit, type Event, type TrajectoryDetail } from "@/lib/types";
+import { fmtHit, hitCls } from "@/routes/Trajectories";
 import { useReducedMotion } from "@/lib/hooks";
 
 const CONTENT_KEYS = new Set<string>([attr.PROMPT_TEXT, attr.TOOL_INPUT, attr.TOOL_OUTPUT, attr.SHELL_COMMAND, attr.SEARCH_PATTERN, attr.ERROR_MESSAGE, attr.NOTIFICATION_MESSAGE]);
@@ -43,7 +44,7 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
     { k: modelKnown ? "idle / other" : "unattributed", v: other, c: "var(--color-bg-4)" },
   ].filter((p) => p.v > 0);
   return (
-    <div className="grid gap-4 border-b border-line px-4 py-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="grid gap-4 border-b border-line px-4 py-3 lg:grid-cols-3">
       <div>
         <div className="label text-[10px]">Where the time went</div>
         <div className="mt-2 flex h-2.5 w-full gap-[2px] overflow-hidden rounded-[3px]" role="img" aria-label={parts.map((p) => `${p.k} ${Math.round((p.v / total) * 100)}%`).join(", ")}>
@@ -68,6 +69,38 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
           ))}
           {b.top.length === 0 && <li className="text-fg-4">no tool calls</li>}
         </ol>
+      </div>
+      <div>
+        <div className="label text-[10px]">Cache hit rate per model call</div>
+        <div className="mt-2"><CacheChart rows={rows} /></div>
+      </div>
+    </div>
+  );
+}
+
+/** Cache hit rate per model call, in order. A dip means the prompt prefix changed and had to be re-sent. */
+function CacheChart({ rows }: { rows: Row[] }) {
+  const pts = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ id: r.id, t0: r.t0, hit: cacheHit(r.tokens!.in, r.tokens!.cacheWrite, r.tokens!.cacheRead), write: r.tokens!.cacheWrite }));
+  const valid = pts.filter((p) => p.hit != null);
+  if (valid.length < 2) return <div className="mono text-[10.5px] text-fg-4">not enough model calls</div>;
+  const W = 100, H = 30;
+  const x = (i: number) => (i / (pts.length - 1)) * W;
+  const y = (h: number) => H - 2 - h * (H - 4);
+  const d = pts.map((p, i) => (p.hit == null ? "" : `${i === 0 || pts[i - 1].hit == null ? "M" : "L"}${x(i).toFixed(2)} ${y(p.hit).toFixed(2)}`)).join(" ");
+  const dips = pts.map((p, i) => ({ ...p, i })).filter((p) => p.hit != null && p.hit < 0.5);
+  const worst = dips.sort((a, b) => (a.hit ?? 1) - (b.hit ?? 1))[0];
+  const min = Math.min(...valid.map((p) => p.hit as number));
+  const last = valid[valid.length - 1].hit as number;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-[52px] w-full" preserveAspectRatio="none" role="img" aria-label={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}>
+        {[0.5, 1].map((g) => <line key={g} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="var(--color-line)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />)}
+        <path d={d} fill="none" stroke="var(--color-model)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+        {dips.map((p) => <circle key={p.id} cx={x(p.i)} cy={y(p.hit as number)} r="1.6" fill="var(--color-warn)" />)}
+      </svg>
+      <div className="mono mt-1 flex flex-wrap justify-between gap-x-3 text-[10.5px] text-fg-4">
+        <span>latest <span className={hitCls(last)}>{fmtHit(last)}</span> · lowest <span className={hitCls(min)}>{fmtHit(min)}</span></span>
+        {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtK(worst.write)}</span> : <span>no calls under 50%</span>}
       </div>
     </div>
   );
@@ -136,6 +169,7 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
             <span className="hidden lg:inline">cache-w <span className="text-fg-3">{fmtK(r.tokens.cacheWrite)}</span></span>
             <span className="hidden md:inline">cache-r <span className="text-fg-3">{fmtK(r.tokens.cacheRead)}</span></span>
             <span>out <span className="text-fg-2">{fmtK(r.tokens.out)}</span></span>
+            <span className={cx("w-9 text-right", hitCls(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead)))}>{fmtHit(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span>
           </span>
         ) : (
           r.dims.map((d, i) => <span key={i} className={cx("hidden md:inline", d.startsWith("exit") && !d.endsWith(" 0") && "text-err")}>{d}</span>)
@@ -171,6 +205,7 @@ function Header({ d }: { d: TrajectoryDetail }) {
     ["cache write", fmtTokens(d.cache_creation_tokens)],
     ["cache read", fmtTokens(d.cache_read_tokens)],
     ["out", fmtTokens(d.output_tokens)],
+    ["cache hit", fmtHit(cacheHit(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens))],
     ["events", String(d.event_count)],
   ];
   return (
@@ -188,7 +223,7 @@ function Header({ d }: { d: TrajectoryDetail }) {
         </div>
         <span className={cx("mono inline-flex items-center gap-1.5 text-[12px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
       </div>
-      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-9">
+      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-10">
         {stats.map(([k, v]) => (
           <div key={k} className="bg-bg-1 px-3 py-2"><dt className="label text-[10px]">{k}</dt><dd className="mt-0.5 text-[13px] text-fg">{v}</dd></div>
         ))}
