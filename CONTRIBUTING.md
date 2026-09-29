@@ -17,6 +17,8 @@ cargo fmt --all --check
 cd ui && npm ci && npm run typecheck && npm run build
 ```
 
+`make ui` builds the UI, embeds it in a debug `gsd` and serves it on port 14318 over your real data, next to the installed daemon. `make ui-dev` runs the Vite dev server with hot reload instead, and `make check` runs what CI runs.
+
 To try a change end to end without touching your real install:
 
 ```sh
