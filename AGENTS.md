@@ -14,15 +14,21 @@ Corollaries:
 - Authentication stays in one `fetch` wrapper (`ui/src/lib/api.ts`). Local sends nothing; hosted adds a token or relies on a cookie.
 - Wire types in `ui/src/lib/types.ts` mirror `crates/schema` and `crates/gsd/src/api.rs` exactly. Change both sides in the same commit.
 
+## Workflow
+
+Every change is a branch and a pull request into `main`, squash-merged once CI is green. Never push to `main` directly.
+
+- Branch names carry a type prefix and say what the change is: `feat/opencode-cost-rollup`, `fix/codex-apply-patch-paths`, `chore/pin-actions`, `docs/config-reference`.
+- The PR title becomes the squashed commit subject, and `cliff.toml` turns commit subjects into `CHANGELOG.md`. So the title needs the same prefix and must describe the change for a user reading the changelog: `feat: roll up OpenCode subagent cost`, not `feat: fixes`. `feat:`/`Add` land under Added, `fix:` under Fixed, `UI:`, `CLI:` and `gsd:` under their area, `docs:` under Documentation, anything else under Changed.
+- Never edit `CHANGELOG.md` by hand. Releases are cut with the *Prepare release* workflow, which regenerates it.
+
 ## Other rules
 
 - `STYLEGUIDE.md` governs anything visual, every number format, copy voice, and code conventions for both TypeScript and Rust. Follow it without being asked.
-- Commit subjects are grouped into `CHANGELOG.md` by `cliff.toml`: write them as `UI: …`, `CLI: …`, `gsd: …`, `Add …`, `Fix …`, `Docs: …`. Never edit `CHANGELOG.md` by hand.
 - Never log or persist content attributes (`gs.prompt.text`, tool bodies, `gs.shell.command`) outside the store, and never log tokens. Redaction runs in `gsd` before storage; nothing may bypass it.
 - Event ids must be stable across redelivery. Derive them from the source; never mint one at ingest.
 - Attribute keys come from `groundstation_schema::attr`; don't write the string twice.
 - `cargo build` must keep working without Node. The UI is embedded by `crates/gsd/build.rs` when `ui/dist` exists and replaced by a placeholder page when it doesn't.
-- Releases are cut with the *Prepare release* workflow, never by hand-editing versions.
 
 ## Map
 

@@ -39,8 +39,8 @@ commit_parsers = [
   { message = "^first commit$", skip = true },
   { message = "^(Add|feat)\\b", group = "<!-- 0 -->Added" },
   { message = "^(Fix|fix)\\b", group = "<!-- 1 -->Fixed" },
-  { message = "^UI:", group = "<!-- 2 -->UI" },
-  { message = "^(CLI|gsd|Daemon|Schema|Adapters?|Codex|Claude Code):", group = "<!-- 3 -->CLI and daemon" },
-  { message = "^(README|Docs|STYLEGUIDE)\\b", group = "<!-- 5 -->Documentation" },
+  { message = "^(UI|ui):", group = "<!-- 2 -->UI" },
+  { message = "^(CLI|cli|gsd|Daemon|Schema|Adapters?|Codex|Claude Code):", group = "<!-- 3 -->CLI and daemon" },
+  { message = "^(README|Docs|docs|STYLEGUIDE)\\b", group = "<!-- 5 -->Documentation" },
   { message = ".*", group = "<!-- 4 -->Changed" },
 ]
