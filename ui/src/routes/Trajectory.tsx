@@ -81,7 +81,8 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
 
 /** Cache hit rate per model call, in order. A dip means the prompt prefix changed and had to be re-sent. */
 function CacheChart({ rows }: { rows: Row[] }) {
-  const pts = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ id: r.id, t0: r.t0, hit: cacheHit(r.tokens!.in, r.tokens!.cacheWrite, r.tokens!.cacheRead), write: r.tokens!.cacheWrite }));
+  const [hover, setHover] = useState<number | null>(null);
+  const pts = rows.filter((r) => r.kind === "model" && r.tokens).map((r) => ({ id: r.id, t0: r.t0, hit: cacheHit(r.tokens!.in, r.tokens!.cacheWrite, r.tokens!.cacheRead), read: r.tokens!.cacheRead, write: r.tokens!.cacheWrite }));
   const valid = pts.filter((p) => p.hit != null);
   if (valid.length < 2) return <div className="mono text-[10.5px] text-fg-4">not enough model calls</div>;
   const W = 100, H = 30;
@@ -92,14 +93,39 @@ function CacheChart({ rows }: { rows: Row[] }) {
   const worst = dips.sort((a, b) => (a.hit ?? 1) - (b.hit ?? 1))[0];
   const min = Math.min(...valid.map((p) => p.hit as number));
   const last = valid[valid.length - 1].hit as number;
+  const h = hover != null ? pts[hover] : null;
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    setHover(Math.round(f * (pts.length - 1)));
+  };
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-[52px] w-full" preserveAspectRatio="none" role="img" aria-label={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}>
-        {[0.5, 1].map((g) => <line key={g} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="var(--color-line)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />)}
-        <path d={d} fill="none" stroke="var(--color-model)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-        {dips.map((p) => <circle key={p.id} cx={x(p.i)} cy={y(p.hit as number)} r="1.6" fill="var(--color-warn)" />)}
-      </svg>
-      <div className="mono mt-1 flex flex-wrap justify-between gap-x-3 text-[10.5px] text-fg-4">
+      <div className="flex gap-1.5">
+        <div className="mono relative h-[52px] w-7 shrink-0 text-right text-[9.5px] leading-none text-fg-4" aria-hidden>
+          {[1, 0.5, 0].map((g) => <span key={g} className="absolute right-0 -translate-y-1/2" style={{ top: `${(y(g) / H) * 100}%` }}>{g * 100}%</span>)}
+        </div>
+        <div className="relative h-[52px] min-w-0 flex-1" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" preserveAspectRatio="none" role="img" aria-label={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}>
+            {[0, 0.5, 1].map((g) => <line key={g} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="var(--color-line)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />)}
+            <path d={d} fill="none" stroke="var(--color-model)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+            {dips.map((p) => <circle key={p.id} cx={x(p.i)} cy={y(p.hit as number)} r="1.6" fill="var(--color-warn)" />)}
+          </svg>
+          {h && hover != null && (
+            <>
+              <div className="pointer-events-none absolute inset-y-0 w-px bg-fg-4/50" style={{ left: `${(hover / (pts.length - 1)) * 100}%` }} />
+              {h.hit != null && <div className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-bg bg-model" style={{ left: `${(hover / (pts.length - 1)) * 100}%`, top: `${(y(h.hit) / H) * 100}%` }} />}
+              <div
+                className={cx("mono pointer-events-none absolute bottom-full z-10 mb-1.5 whitespace-nowrap rounded-[4px] border border-line bg-bg-2 px-2 py-1 text-[10.5px] text-fg-3 shadow-sm", hover / (pts.length - 1) > 0.6 ? "-translate-x-full" : "")}
+                style={{ left: `${(hover / (pts.length - 1)) * 100}%` }}
+              >
+                <span className={hitCls(h.hit)}>{fmtHit(h.hit)}</span> · call {hover + 1} at {fmtClock(h.t0 / 1000)} · read {fmtK(h.read)} · wrote {fmtK(h.write)}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="mono mt-1 flex flex-wrap justify-between gap-x-3 pl-[34px] text-[10.5px] text-fg-4">
         <span>latest <span className={hitCls(last)}>{fmtHit(last)}</span> · lowest <span className={hitCls(min)}>{fmtHit(min)}</span></span>
         {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtK(worst.write)}</span> : <span>no calls under 50%</span>}
       </div>
