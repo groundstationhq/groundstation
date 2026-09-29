@@ -2,7 +2,7 @@
  * Demo data in the exact wire shape gsd returns, used when no daemon is reachable.
  * Everything here is invented but plausible; the UI shows a "demo data" notice when it's in use.
  */
-import { attr, SCHEMA, type Event, type EventKind, type TrajectoryDetail, type TrajectorySummary } from "./types";
+import { attr, SCHEMA, type Event, type EventKind, type ToolStats, type TrajectoryDetail, type TrajectorySummary } from "./types";
 
 type Spec = {
   id: string;
@@ -44,7 +44,7 @@ function build(spec: Spec): TrajectoryDetail {
     attributes: Object.fromEntries(Object.entries(a).filter(([, v]) => v != null)),
   });
   const events: Event[] = [ev("agent.started", 0, { [attr.SESSION_ID]: `ses_${spec.id.slice(-6)}`, [attr.SESSION_SOURCE]: "startup", [attr.CWD]: spec.cwd, [attr.PERMISSION_MODE]: "default" })];
-  let s = { user_turns: 0, model_calls: 0, tool_calls: 0, tool_errors: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
+  let s = { user_turns: 0, model_calls: 0, tool_calls: 0, tool_errors: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0 };
   let ended: string | null = null;
   let status: string = spec.status;
   let n = 0;
@@ -187,4 +187,17 @@ export const DEMO_HEALTH = {
   status: "ok", ui: false, adapters: ["claude-code"], version: "0.1.0-demo", schema: SCHEMA, pid: 0, data_dir: "(demo data)",
   trajectories: DEMO.length, events: DEMO.reduce((a, d) => a + d.events.length, 0), spool_pending: 0,
   upload: { mode: "local-only", endpoint: null, pending: 0 },
+};
+
+export const DEMO_TOOL_STATS: ToolStats = {
+  days: 14,
+  since: new Date(Date.now() - 14 * 86_400_000).toISOString(),
+  tools: [
+    { category: "shell", calls: 412, failed: 23, p50_ms: 2410, p95_ms: 47193, max_ms: 61200 },
+    { category: "file_read", calls: 388, failed: 2, p50_ms: 14, p95_ms: 96, max_ms: 410 },
+    { category: "search", calls: 121, failed: 0, p50_ms: 31, p95_ms: 240, max_ms: 900 },
+    { category: "file_write", calls: 97, failed: 1, p50_ms: 22, p95_ms: 140, max_ms: 380 },
+    { category: "http", calls: 40, failed: 3, p50_ms: 188, p95_ms: 1204, max_ms: 4100 },
+    { category: "browser", calls: 12, failed: 1, p50_ms: 312, p95_ms: 2140, max_ms: 5300 },
+  ],
 };

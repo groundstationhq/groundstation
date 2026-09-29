@@ -3,10 +3,10 @@ import { SortToggle, type Order } from "@/components/ui/SortToggle";
 import { Glyph, StatusDot } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
 import { Bars, HBars, Line, Stacked } from "@/components/charts";
-import { trajectories } from "@/lib/api";
+import { toolStats, trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
-import { cacheHit, promptTokens, type TrajectorySummary } from "@/lib/types";
+import { cx, fmtDur, fmtInt, fmtTokens, fmtUsd, tilde } from "@/lib/format";
+import { cacheHit, promptTokens, totalTokens, type ToolStats, type TrajectorySummary } from "@/lib/types";
 import { fmtHit, hitCls } from "@/routes/Trajectories";
 
 /* ---------- live ---------- */
@@ -148,39 +148,146 @@ function Findings() {
   );
 }
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/* ---------- live charts ---------- */
 
-function Charts() {
-  const hitTrend = [0.97, 0.98, 0.98, 0.97, 0.99, 0.98, 0.62, 0.71, 0.96, 0.98, 0.99, 0.98, 0.99, 0.99];
+/** The last `n` local calendar days, oldest first. */
+function lastDays(n: number): Array<{ start: number; end: number; label: string }> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Array.from({ length: n }, (_, k) => {
+    const i = n - 1 - k;
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const e = new Date(d);
+    e.setDate(d.getDate() + 1);
+    return { start: d.getTime(), end: e.getTime(), label: i === 0 ? "today" : i === 1 ? "yesterday" : d.toLocaleDateString([], { weekday: "short" }) };
+  });
+}
+
+const startedIn = (r: TrajectorySummary, d: { start: number; end: number }) => {
+  const t = new Date(r.started_at).getTime();
+  return t >= d.start && t < d.end;
+};
+
+/** Nearest-rank percentile of an ascending list. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length, Math.max(1, Math.ceil(p * sorted.length))) - 1];
+}
+
+function Note({ children }: { children: React.ReactNode }) {
+  return <div className="mono px-4 py-7 text-center text-[11px] text-fg-4">{children}</div>;
+}
+
+function DurationChart({ rows }: { rows: TrajectorySummary[] }) {
+  const durs = rows.filter((r) => r.status !== "running" && r.duration_ms > 0).map((r) => r.duration_ms).sort((a, b) => a - b);
+  if (durs.length < 2) return <Card title="Trajectory duration" right="finished runs"><Note>needs at least two finished runs</Note></Card>;
+  const p50 = percentile(durs, 0.5), p95 = percentile(durs, 0.95);
+  const BINS = 14;
+  const cap = Math.max(60_000, p95 * 1.25); // the last bin collects everything past this
+  const width = cap / (BINS - 1);
+  const counts = new Array<number>(BINS).fill(0);
+  for (const d of durs) counts[Math.min(BINS - 1, Math.floor(d / width))]++;
+  const runs = (n: number) => `${n} run${n === 1 ? "" : "s"}`;
+  const titles = counts.map((n, i) => (i === BINS - 1 ? `${runs(n)} · ${fmtDur(cap)}+` : `${runs(n)} · ${fmtDur(i * width)} – ${fmtDur((i + 1) * width)}`));
+  return (
+    <Card title="Trajectory duration" right={`p50 ${fmtDur(p50)} · p95 ${fmtDur(p95)}`}>
+      <div className="px-4 py-3">
+        <Bars values={counts} titles={titles} labels={[`${durs.length} finished`, `p50 ${fmtDur(p50)}`, `${fmtDur(cap)}+`]} highlight={(i) => i === BINS - 1} ariaLabel={`Distribution of ${durs.length} finished trajectory durations; median ${fmtDur(p50)}, 95th percentile ${fmtDur(p95)}`} />
+      </div>
+    </Card>
+  );
+}
+
+function CacheTrend({ rows }: { rows: TrajectorySummary[] }) {
+  const days = lastDays(14);
+  const pts = days.map((d) => {
+    const inDay = rows.filter((r) => startedIn(r, d));
+    if (inDay.length === 0) return null;
+    const sum = (f: (r: TrajectorySummary) => number) => inDay.reduce((a, r) => a + f(r), 0);
+    return cacheHit(sum((r) => r.input_tokens), sum((r) => r.cache_creation_tokens), sum((r) => r.cache_read_tokens));
+  });
+  const valid = pts.filter((v): v is number => v != null);
+  if (valid.length === 0) return <Card title="Cache hit rate" right="14 days"><Note>no model calls in the last 14 days</Note></Card>;
+  const dips = pts.flatMap((v, i) => (v != null && v < 0.5 ? [i] : []));
+  const latest = valid[valid.length - 1];
+  const lowest = Math.min(...valid);
+  return (
+    <Card title="Cache hit rate" right={<>14 days · latest <span className={hitCls(latest)}>{fmtHit(latest)}</span></>}>
+      <div className="px-4 py-3">
+        <Line values={pts} min={0} max={1} marks={dips} titles={days.map((d, i) => (pts[i] == null ? `${d.label}: no runs` : `${d.label}: ${fmtHit(pts[i])}`))} ariaLabel={`Daily cache hit rate over 14 days, latest ${fmtHit(latest)}, lowest ${fmtHit(lowest)}`} />
+        <div className="mono mt-1 flex justify-between text-[10px] text-fg-4">
+          <span>{days[0].label}</span>
+          {dips.length > 0 ? <span className="text-warn">{dips.length} day{dips.length > 1 ? "s" : ""} under 50%</span> : <span>lowest {fmtHit(lowest)}</span>}
+          <span>today</span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ToolLatencyChart({ stats, error }: { stats: ToolStats | null; error?: string }) {
+  const days = stats?.days ?? 14;
+  const tools = (stats?.tools ?? []).slice(0, 6);
+  if (tools.length === 0) {
+    return (
+      <Card title="Tool latency" right={`p50 / p95 · ${days}d`}>
+        <Note>{error ? <>this gsd has no <span className="text-fg-3">/v1/stats/tools</span>; run <span className="text-fg-3">groundstation update</span></> : stats ? `no tool calls in the last ${days} days` : "loading…"}</Note>
+      </Card>
+    );
+  }
+  const slowest = [...tools].sort((a, b) => b.p95_ms - a.p95_ms)[0];
+  return (
+    <Card title="Tool latency" right={`p50 / p95 · ${days}d`}>
+      <div className="px-4 py-3">
+        <HBars log rows={tools.map((t) => ({ k: t.failed > 0 ? `${t.category} ✕${t.failed}` : t.category, p50: t.p50_ms, p95: t.p95_ms, fmt: fmtDur }))} ariaLabel={`Tool latency by category over ${days} days; ${slowest.category} slowest at ${fmtDur(slowest.p95_ms)} p95`} />
+      </div>
+    </Card>
+  );
+}
+
+function CostChart({ rows }: { rows: TrajectorySummary[] }) {
+  const days = lastDays(14);
+  const perDay = days.map((d) => rows.filter((r) => startedIn(r, d)));
+  const cost = perDay.map((rs) => rs.reduce((a, r) => a + r.cost_usd, 0));
+  const tokens = perDay.map((rs) => rs.reduce((a, r) => a + totalTokens(r), 0));
+  const hasCost = cost.some((v) => v > 0);
+  if (!tokens.some((v) => v > 0)) return <Card title="Cost per day" right="14 days"><Note>no runs in the last 14 days</Note></Card>;
+
+  // The day an agent first ran a new version, after its first day in the window.
+  const firstDay = new Map<string, number>();
+  perDay.forEach((rs, i) => rs.forEach((r) => {
+    for (const key of [r.agent, `${r.agent}@${r.agent_version ?? ""}`]) if (!firstDay.has(key)) firstDay.set(key, i);
+  }));
+  const shipped: Array<{ i: number; label: string }> = [];
+  for (const [key, i] of firstDay) {
+    const at = key.indexOf("@");
+    if (at < 0 || key.slice(at + 1) === "") continue;
+    if (i > (firstDay.get(key.slice(0, at)) ?? 0)) shipped.push({ i, label: `${key.slice(0, at)} ${key.slice(at + 1)}` });
+  }
+  const shippedOn = new Set(shipped.map((s) => s.i));
+  const values = hasCost ? cost : tokens;
+  const fmt = hasCost ? (v: number) => fmtUsd(v) : (v: number) => `${fmtTokens(v)} tokens`;
+  const titles = days.map((d, i) => `${d.label}: ${fmt(values[i])}${shipped.filter((s) => s.i === i).map((s) => ` · ${s.label} shipped`).join("")}`);
+  const middle = shipped.length === 1 ? `${shipped[0].label} shipped` : shipped.length > 1 ? `${shipped.length} version changes` : "";
+  return (
+    <Card title={hasCost ? "Cost per day" : "Tokens per day"} right={`${fmt(values[values.length - 1])} today`}>
+      <div className="px-4 py-3">
+        <Bars tone="neutral" values={values} titles={titles} labels={[days[0].label, middle, "today"]} highlight={(i) => shippedOn.has(i)} ariaLabel={`${hasCost ? "Cost" : "Tokens"} per day over 14 days, ${fmt(values[values.length - 1])} today${middle ? `, ${middle}` : ""}`} />
+        <p className="mt-2 text-[11px] leading-[1.45] text-fg-3">{hasCost ? "Dollars as reported by the agent (OpenCode, pi). Claude Code and Codex report tokens only, so their runs don't add to this." : "No agent here reports cost; Claude Code and Codex report tokens only."}</p>
+      </div>
+    </Card>
+  );
+}
+
+function Charts({ rows }: { rows: TrajectorySummary[] }) {
+  const stats = useAsync((s) => toolStats(14, s), [], 30_000);
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      <Card title="Trajectory duration" preview right="p50 3m 41s · p95 14m 22s">
-        <div className="px-4 py-3">
-          <Bars values={[4, 18, 41, 62, 48, 31, 19, 12, 8, 5, 3, 2, 1, 1]} labels={["0m", "p50 3m 41s", "28m+"]} highlight={(i) => i >= 11} ariaLabel="Distribution of trajectory durations, most between two and six minutes, a tail past 20 minutes" />
-        </div>
-      </Card>
-      <Card title="Cache hit rate" preview right="14 days">
-        <div className="px-4 py-3">
-          <Line values={hitTrend} min={0.5} max={1} marks={[6, 7]} ariaLabel="Daily cache hit rate, steady near 98% with a two-day dip to 62% after a prompt change" />
-          <div className="mono mt-1 flex justify-between text-[10px] text-fg-4"><span>{DAYS[0]}</span><span className="text-warn">dip: prompt change</span><span>today</span></div>
-        </div>
-      </Card>
-      <Card title="Tool latency" preview right="p50 / p95">
-        <div className="px-4 py-3">
-          <HBars log rows={[
-            { k: "shell", p50: 2410, p95: 47193, fmt: fmtDur },
-            { k: "browser", p50: 312, p95: 2140, fmt: fmtDur },
-            { k: "http", p50: 188, p95: 1204, fmt: fmtDur },
-            { k: "grep", p50: 31, p95: 240, fmt: fmtDur },
-            { k: "read_file", p50: 14, p95: 96, fmt: fmtDur },
-          ]} ariaLabel="Tool latency by tool; shell dominates at 47 seconds p95" />
-        </div>
-      </Card>
-      <Card title="Cost per day" preview right="est. · $129 today">
-        <div className="px-4 py-3">
-          <Bars tone="neutral" values={[61, 58, 66, 71, 64, 88, 102, 97, 91, 106, 118, 112, 121, 129]} labels={["14d ago", "agent v42 shipped", "today"]} highlight={(i) => i === 6} ariaLabel="Estimated cost per day over 14 days, rising from $61 to $129 after agent v42 shipped" />
-        </div>
-      </Card>
+      <DurationChart rows={rows} />
+      <CacheTrend rows={rows} />
+      <ToolLatencyChart stats={stats.status === "ok" ? stats.data.data : null} error={stats.status === "error" ? stats.error : undefined} />
+      <CostChart rows={rows} />
     </div>
   );
 }
@@ -233,7 +340,7 @@ function Where({ rows }: { rows: TrajectorySummary[] }) {
 }
 
 export function Overview() {
-  const st = useAsync((s) => trajectories(200, s), [], 5_000);
+  const st = useAsync((s) => trajectories(1000, s), [], 5_000);
   const rows = useMemo(() => (st.status === "ok" ? st.data.data : []), [st]);
   const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
@@ -255,7 +362,7 @@ export function Overview() {
         </div>
         <Findings />
       </div>
-      <Charts />
+      <Charts rows={rows} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
         <Recent rows={rows} order={order} onOrder={setOrder} />
         <Versions />

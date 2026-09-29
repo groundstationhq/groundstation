@@ -1,5 +1,5 @@
-import { DEMO, DEMO_HEALTH } from "./fixtures";
-import type { Health, TrajectoryDetail, TrajectorySummary } from "./types";
+import { DEMO, DEMO_HEALTH, DEMO_TOOL_STATS } from "./fixtures";
+import type { Health, ToolStats, TrajectoryDetail, TrajectorySummary } from "./types";
 
 /**
  * Client for gsd's local API. Falls back to demo fixtures when no daemon answers,
@@ -57,4 +57,17 @@ export async function trajectory(id: string, signal?: AbortSignal): Promise<{ da
   const d = DEMO.find((t) => t.id === id);
   if (!d) throw new Error(`no trajectory ${id}`);
   return { data: d, source: "demo" };
+}
+
+export async function toolStats(days = 14, signal?: AbortSignal): Promise<{ data: ToolStats; source: Source }> {
+  if (demoMode !== true) {
+    try {
+      const data = await get<ToolStats>(`/v1/stats/tools?days=${days}`, signal);
+      return { data, source: "gsd" };
+    } catch (e) {
+      if (demoMode === false) throw e;
+      demoMode = true;
+    }
+  }
+  return { data: DEMO_TOOL_STATS, source: "demo" };
 }

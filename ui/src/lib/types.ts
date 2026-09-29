@@ -105,6 +105,21 @@ export interface Health {
   upload: { mode: string; endpoint: string | null; pending: number };
 }
 
+/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/gsd/src/api.rs. */
+export interface ToolStats {
+  days: number;
+  since: string;
+  tools: ToolLatency[];
+}
+export interface ToolLatency {
+  category: string;
+  calls: number;
+  failed: number;
+  p50_ms: number;
+  p95_ms: number;
+  max_ms: number;
+}
+
 export type TrajectoryStatus = "running" | "idle" | "completed" | "failed" | "cancelled" | (string & {});
 
 export interface TrajectorySummary {
@@ -130,6 +145,8 @@ export interface TrajectorySummary {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  /** Sum of `gs.cost.usd`; 0 when the agent doesn't report cost. */
+  cost_usd: number;
 }
 
 export interface TrajectoryDetail extends TrajectorySummary {
