@@ -126,6 +126,7 @@ groundstation connect claude-code       # or: codex, opencode, pi
 claude                                  # run your agent as usual; the trajectory shows up
 groundstation trajectories              # in the terminal
 groundstation ui                        # or in the browser: http://127.0.0.1:4318/
+groundstation update                    # later: install the latest release and restart gsd
 ```
 
 <br>

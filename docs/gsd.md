@@ -30,6 +30,7 @@ claude                              # use your agents as usual
 groundstation trajectories          # recent runs
 groundstation show <id-prefix>      # one run as a timeline
 groundstation resync claude-code    # re-read its transcripts, e.g. after upgrading
+groundstation update                # install the latest release over an installer-made install and restart gsd
 ```
 
 ```text
@@ -91,7 +92,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 
 Because the daemon holds prompts and code, it only answers requests whose `Host` is a loopback name (which defeats DNS rebinding) and only accepts `application/json` bodies (browsers can't send those cross-origin without a preflight, and gsd never answers one).
 
-Run it with `groundstation daemon start|stop|status`, or in the foreground with `gsd` or `groundstation daemon run`. Data lives in `~/.local/share/groundstation` (`gsd.db`, `spool/`, `gsd.log`), created readable by your user only.
+Run it with `groundstation daemon start|stop|status`, or in the foreground with `gsd` or `groundstation daemon run`. `groundstation update` installs the latest GitHub Release into the installer's layout (`~/.local/share/groundstation/releases/`, linked from `~/.local/bin`) and restarts a running gsd; `--check` only reports, `--to 0.1.1` picks a version. Installs made with cargo or a package manager are left alone with a hint. `groundstation status` warns when the running gsd's version differs from the CLI's. Data lives in `~/.local/share/groundstation` (`gsd.db`, `spool/`, `gsd.log`), created readable by your user only.
 
 ## Configuration
 

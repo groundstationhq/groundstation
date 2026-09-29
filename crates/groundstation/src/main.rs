@@ -2,6 +2,7 @@
 
 mod client;
 mod render;
+mod update;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,15 @@ enum Command {
     Resync { agent: AgentName },
     /// Print config and data locations and the effective configuration.
     Config,
+    /// Install the latest release over this install and restart gsd.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Install this version instead of the latest, e.g. 0.1.1.
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -328,6 +338,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }),
         Command::Resync { agent } => block_on(resync(&config, agent)),
+        Command::Update { check, to } => block_on(update_cmd(&config, check, to)),
         Command::Config => {
             let mut shown = config.clone();
             // Fail here, not at daemon start, on a bad exclude or env glob.
@@ -653,6 +664,96 @@ async fn ui(config: &Config, config_path: Option<&Path>, no_open: bool) -> Resul
     Ok(ExitCode::SUCCESS)
 }
 
+/// `groundstation update [--check] [--to VERSION]`.
+async fn update_cmd(config: &Config, check: bool, to: Option<String>) -> Result<ExitCode> {
+    let layout = update::Layout::from_env();
+    let current =
+        update::Version::parse(update::CURRENT).context("parsing this build's version")?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .user_agent(concat!("groundstation/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    let latest = update::latest(&http, &layout).await?;
+    let wanted = match &to {
+        Some(v) => update::Version::parse(v).with_context(|| format!("not a version: {v:?}"))?,
+        None => latest.clone(),
+    };
+    if check {
+        match latest.cmp(&current) {
+            std::cmp::Ordering::Greater => {
+                println!("groundstation {current} → {latest} available; run `groundstation update`")
+            }
+            std::cmp::Ordering::Equal => println!("groundstation {current} is the latest release"),
+            std::cmp::Ordering::Less => {
+                println!("groundstation {current} is ahead of the latest release ({latest})")
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if to.is_none() && wanted <= current {
+        if wanted == current {
+            println!("groundstation {current} is already the latest release");
+        } else {
+            println!(
+                "groundstation {current} is ahead of the latest release ({latest}); use --to to install it anyway"
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let exe = std::env::current_exe().context("locating the groundstation binary")?;
+    match update::detect(&exe, &layout) {
+        update::Install::Managed => {}
+        update::Install::Cargo => {
+            println!("groundstation {current} → {wanted}");
+            println!("This groundstation was installed with cargo. Upgrade it with:");
+            println!(
+                "  cargo install --git https://github.com/{} --tag v{wanted} gsd groundstation",
+                update::REPO
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        update::Install::Other => {
+            println!("groundstation {current} → {wanted}");
+            println!(
+                "{} wasn't put there by the Ground Station installer, so update won't replace it.",
+                render::tilde(&exe.to_string_lossy())
+            );
+            println!("Upgrade the way it was installed, or run the installer:");
+            println!("  curl -fsSL https://groundstation.sh/install | sh");
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
+    let say = |line: &str| println!("==> {line}");
+    let release_dir = update::install(&http, &layout, &wanted, &say).await?;
+    update::link(&layout, &release_dir)?;
+    say(&format!(
+        "Linked {} → {}",
+        render::tilde(&layout.bin.to_string_lossy()),
+        render::tilde(&release_dir.to_string_lossy())
+    ));
+
+    // The daemon still runs the old binary until restarted. Let the new CLI
+    // do it, so the gsd it starts is the one just installed.
+    if Client::new(config)?.health().await.is_ok() {
+        let mut cmd = std::process::Command::new(release_dir.join("groundstation"));
+        cmd.args(["daemon", "restart"]);
+        if let Some(path) = std::env::var_os("GROUNDSTATION_CONFIG") {
+            cmd.arg("--config").arg(path);
+        }
+        let status = cmd.status().context("restarting gsd with the new binary")?;
+        if !status.success() {
+            bail!("the new groundstation could not restart gsd ({status})");
+        }
+    }
+    println!();
+    println!("groundstation {current} → {wanted} installed.");
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn status(config: &Config) -> Result<ExitCode> {
     let health = match Client::new(config)?.health().await {
         Ok(h) => h,
@@ -670,6 +771,12 @@ async fn status(config: &Config) -> Result<ExitCode> {
         "gsd {} running (pid {}) on {}",
         health.version, health.pid, config.daemon.listen
     );
+    if health.version != update::CURRENT {
+        println!(
+            "  ⚠ this CLI is {}; run `groundstation daemon restart` so gsd matches",
+            update::CURRENT
+        );
+    }
     let missing = missing_adapters(&health);
     if !missing.is_empty() {
         println!(

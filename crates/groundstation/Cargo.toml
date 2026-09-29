@@ -12,6 +12,7 @@ homepage.workspace = true
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
+flate2 = "1.1.10"
 groundstation-adapter-claude-code = { version = "0.1.0", path = "../../adapters/claude-code" }
 groundstation-adapter-codex = { version = "0.1.0", path = "../../adapters/codex" }
 groundstation-adapter-opencode = { version = "0.1.0", path = "../../adapters/opencode" }
@@ -23,6 +24,8 @@ open = "5.4.4"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11.0"
+tar = "0.4.46"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "1.1.6"
 uuid = { version = "1.26.1", features = ["v7"] }
