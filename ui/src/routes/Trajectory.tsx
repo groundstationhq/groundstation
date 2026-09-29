@@ -13,7 +13,43 @@ import { SortToggle, type Order } from "@/components/ui/SortToggle";
 
 const CONTENT_KEYS = new Set<string>([attr.PROMPT_TEXT, attr.TOOL_INPUT, attr.TOOL_OUTPUT, attr.SHELL_COMMAND, attr.SEARCH_PATTERN, attr.ERROR_MESSAGE, attr.NOTIFICATION_MESSAGE]);
 
-function Minimap({ rows, total, running }: { rows: Row[]; total: number; running: boolean }) {
+export type Filter = "all" | "user" | "tool" | "model" | "agent" | "notification" | "compaction" | "failed";
+
+/** What the event list can be narrowed to. Each filter shows only its own rows. */
+const FILTERS: Array<{ id: Filter; label: string; match: (r: Row) => boolean }> = [
+  { id: "all", label: "All events", match: () => true },
+  { id: "user", label: "Turns", match: (r) => r.eventKind === "turn.user" },
+  { id: "tool", label: "Tools", match: (r) => r.kind === "tool" },
+  { id: "model", label: "Model calls", match: (r) => r.eventKind.startsWith("model.") },
+  { id: "agent", label: "Subagents", match: (r) => r.kind === "agent" },
+  { id: "notification", label: "Notifications", match: (r) => r.eventKind === "agent.notification" },
+  { id: "compaction", label: "Compactions", match: (r) => r.eventKind === "context.compacted" },
+  { id: "failed", label: "Failed", match: (r) => r.failed || r.kind === "error" },
+];
+
+export function applyFilter(rows: Row[], filter: Filter): Row[] {
+  const f = FILTERS.find((x) => x.id === filter) ?? FILTERS[0];
+  return rows.filter(f.match);
+}
+
+export function filterCounts(rows: Row[]): Record<Filter, number> {
+  const counts = Object.fromEntries(FILTERS.map((f) => [f.id, f.id === "all" ? rows.length : rows.filter(f.match).length])) as Record<Filter, number>;
+  return counts;
+}
+
+interface Filtering { filter: Filter; onFilter: (f: Filter) => void }
+
+/** A number or legend entry that narrows the event list when clicked. */
+function FilterLink({ to, filtering, className, children, title }: { to: Filter; filtering: Filtering; className?: string; children: ReactNode; title?: string }) {
+  const active = filtering.filter === to;
+  return (
+    <button type="button" onClick={() => filtering.onFilter(active ? "all" : to)} aria-pressed={active} title={title ?? (active ? "Show all events" : `Show only ${FILTERS.find((f) => f.id === to)?.label.toLowerCase()}`)} className={cx("rounded-[3px] underline-offset-2 transition-colors hover:text-fg hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-model", active && "text-model", className)}>
+      {children}
+    </button>
+  );
+}
+
+function Minimap({ rows, total, running, filtering }: { rows: Row[]; total: number; running: boolean; filtering: Filtering }) {
   const spans = rows.filter((r) => r.durationMs != null && r.depth === 0 && (r.kind === "tool" || r.kind === "model" || r.kind === "agent"));
   return (
     <div className="border-b border-line px-4 py-3">
@@ -27,7 +63,12 @@ function Minimap({ rows, total, running }: { rows: Row[]; total: number; running
       </div>
       <div className="mono mt-1.5 flex justify-between text-[10px] text-fg-4">
         <span>00:00</span>
-        <span className="text-fg-3"><span className="text-tool">■</span> tool <span className="ml-2 text-model">●</span> model <span className="ml-2 text-agent">◆</span> subagent <span className="ml-2 text-err">■</span> failed</span>
+        <span className="flex gap-2 text-fg-3">
+          <FilterLink to="tool" filtering={filtering}><span className="text-tool">■</span> tool</FilterLink>
+          <FilterLink to="model" filtering={filtering}><span className="text-model">●</span> model</FilterLink>
+          <FilterLink to="agent" filtering={filtering}><span className="text-agent">◆</span> subagent</FilterLink>
+          <FilterLink to="failed" filtering={filtering}><span className="text-err">■</span> failed</FilterLink>
+        </span>
         <span>{fmtClock(total / 1000)}</span>
       </div>
     </div>
@@ -290,20 +331,24 @@ const STATUS: Record<string, { dot: "running" | "ok" | "err" | "idle"; label: st
   cancelled: { dot: "idle", label: "Cancelled", cls: "text-fg-3" },
 };
 
-function Header({ d }: { d: TrajectoryDetail }) {
+interface Stat { k: string; v: ReactNode }
+
+function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<Filter, number>; filtering: Filtering }) {
   const s = STATUS[d.status] ?? { dot: "idle" as const, label: d.status, cls: "text-fg-3" };
-  const stats: Array<[string, string]> = [
-    ["duration", fmtDur(d.duration_ms)],
-    ["turns", String(d.user_turns)],
-    ["model calls", String(d.model_calls)],
-    ["tool calls", d.tool_errors ? `${d.tool_calls} · ${d.tool_errors} failed` : String(d.tool_calls)],
-    ["prompt", fmtTokens(promptTokens(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens))],
-    ["in · uncached", fmtTokens(d.input_tokens)],
-    ["cache write", fmtTokens(d.cache_creation_tokens)],
-    ["cache read", fmtTokens(d.cache_read_tokens)],
-    ["out", fmtTokens(d.output_tokens)],
-    ["cache hit", fmtHit(cacheHit(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens))],
-    ["events", String(d.event_count)],
+  const link = (to: Filter, text: string) => <FilterLink to={to} filtering={filtering}>{text}</FilterLink>;
+  const stats: Stat[] = [
+    { k: "duration", v: fmtDur(d.duration_ms) },
+    { k: "turns", v: link("user", String(d.user_turns)) },
+    { k: "model calls", v: link("model", String(d.model_calls)) },
+    { k: "tool calls", v: <>{link("tool", String(d.tool_calls))}{d.tool_errors > 0 && <> · <FilterLink to="failed" filtering={filtering} className="text-err">{d.tool_errors} failed</FilterLink></>}</> },
+    ...(counts.agent > 0 ? [{ k: "subagents", v: link("agent", String(counts.agent)) }] : []),
+    { k: "prompt", v: fmtTokens(promptTokens(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens)) },
+    { k: "in · uncached", v: fmtTokens(d.input_tokens) },
+    { k: "cache write", v: fmtTokens(d.cache_creation_tokens) },
+    { k: "cache read", v: fmtTokens(d.cache_read_tokens) },
+    { k: "out", v: fmtTokens(d.output_tokens) },
+    { k: "cache hit", v: fmtHit(cacheHit(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens)) },
+    { k: "events", v: link("all", String(d.event_count)) },
   ];
   return (
     <div className="mb-4">
@@ -320,8 +365,8 @@ function Header({ d }: { d: TrajectoryDetail }) {
         </div>
         <span className={cx("mono inline-flex items-center gap-1.5 text-[12px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
       </div>
-      <dl className="mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5 lg:grid-cols-11">
-        {stats.map(([k, v]) => (
+      <dl className={cx("mono mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4", stats.length > 11 ? "lg:grid-cols-12" : "lg:grid-cols-11")}>
+        {stats.map(({ k, v }) => (
           <div key={k} className="bg-bg-1 px-3 py-2"><dt className="label text-[10px]">{k}</dt><dd className="mt-0.5 text-[13px] text-fg">{v}</dd></div>
         ))}
       </dl>
@@ -333,30 +378,34 @@ export function Trajectory({ id }: { id: string }) {
   const reduced = useReducedMotion();
   const st = useAsync((s) => trajectory(id, s), [id], 3_000);
   const [open, setOpen] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "tool" | "model">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [order, setOrder] = useState<Order>("newest");
   const data = st.status === "ok" ? st.data.data : null;
   const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
+  const counts = useMemo(() => filterCounts(rows), [rows]);
+  const filtering: Filtering = { filter, onFilter: setFilter };
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error" || !data) return <Empty title="Couldn't load this trajectory" body={st.status === "error" ? st.error : ""} />;
   const total = Math.max(1, data.duration_ms);
   const maxMs = Math.max(1000, ...rows.map((r) => r.durationMs ?? 0));
-  const filtered = rows.filter((r) => filter === "all" || r.kind === filter || r.kind === "user" || r.kind === "complete" || r.kind === "error");
+  const filtered = applyFilter(rows, filter);
   const shown = order === "newest" ? [...filtered].reverse() : filtered;
   return (
     <div>
-      <Header d={data} />
+      <Header d={data} counts={counts} filtering={filtering} />
       <div className="overflow-hidden rounded-lg border border-line bg-bg-1">
-        <Minimap rows={rows} total={total} running={data.status === "running"} />
+        <Minimap rows={rows} total={total} running={data.status === "running"} filtering={filtering} />
         <Breakdown rows={rows} total={total} />
-        <div className="flex items-center justify-between border-b border-line px-3 py-1.5">
-          <div className="flex gap-1">
-            {(["all", "tool", "model"] as const).map((f) => (
-              <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f} className={cx("whitespace-nowrap rounded-[4px] px-2 py-1 text-[11.5px] transition-colors", filter === f ? "bg-bg-3 text-fg" : "text-fg-3 hover:text-fg-2")}>{f === "all" ? "All events" : f === "tool" ? "Tools" : "Model calls"}</button>
+        <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-line px-3 py-1.5">
+          <div className="flex flex-wrap gap-1" role="group" aria-label="Filter events">
+            {FILTERS.filter((f) => f.id === "all" || counts[f.id] > 0).map((f) => (
+              <button key={f.id} type="button" onClick={() => setFilter(f.id)} aria-pressed={filter === f.id} className={cx("whitespace-nowrap rounded-[4px] px-2 py-1 text-[11.5px] transition-colors", filter === f.id ? "bg-bg-3 text-fg" : "text-fg-3 hover:text-fg-2", f.id === "failed" && filter !== "failed" && "text-err/80 hover:text-err")}>
+                {f.label}{f.id !== "all" && <span className={cx("mono ml-1.5 text-[10.5px]", filter === f.id ? "text-fg-3" : "text-fg-4")}>{counts[f.id]}</span>}
+              </button>
             ))}
           </div>
           <div className="flex items-center gap-3">
-            <div className="mono hidden text-[10.5px] text-fg-4 sm:block">{shown.length} rows · select a row to inspect</div>
+            <div className="mono hidden text-[10.5px] text-fg-4 sm:block">{filter === "all" ? `${shown.length} rows` : `${shown.length} of ${rows.length} rows`} · select a row to inspect</div>
             <SortToggle order={order} onChange={setOrder} />
           </div>
         </div>
@@ -367,6 +416,7 @@ export function Trajectory({ id }: { id: string }) {
               <AnimatePresence initial={false}>{open === r.id && (reduced ? <div><Inspector row={r} /></div> : <Inspector row={r} />)}</AnimatePresence>
             </li>
           ))}
+          {shown.length === 0 && <li className="mono px-3 py-6 text-center text-[11.5px] text-fg-4">nothing matches this filter</li>}
         </ol>
         {data.status === "running" && (
           <div className="mono flex items-center gap-2 border-t border-line px-4 py-2 text-[11px] text-fg-3"><StatusDot status="running" /> live · refreshing every 3s</div>
