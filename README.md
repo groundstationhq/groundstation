@@ -123,7 +123,7 @@ The installer ([`install.sh`](./install.sh)) is POSIX `sh`, never needs root, an
 Until the repository is public, release downloads need a GitHub token, so build from source instead:
 
 ```sh
-cargo install --path crates/groundstation --path crates/gsd
+cargo install --path crates/gsd && cargo install --path crates/groundstation
 ```
 
 ## Releasing
