@@ -10,6 +10,7 @@
 pub mod api;
 pub mod config;
 pub mod ingest;
+pub mod perms;
 pub mod privacy;
 pub mod server;
 pub mod spool;
@@ -35,8 +36,7 @@ const SPOOL_INTERVAL: Duration = Duration::from_secs(2);
 pub async fn run(config: Config) -> Result<()> {
     let config = Arc::new(config);
     let data_dir = config.data_dir();
-    std::fs::create_dir_all(&data_dir)
-        .with_context(|| format!("creating {}", data_dir.display()))?;
+    perms::create_dir_all(&data_dir)?;
 
     let store = Arc::new(Store::open(&config.db_path())?);
     let privacy = Privacy::new(&config)?;
@@ -51,7 +51,7 @@ pub async fn run(config: Config) -> Result<()> {
             )
         })?;
     let pid_file = config.pid_file();
-    std::fs::write(&pid_file, std::process::id().to_string())?;
+    perms::write(&pid_file, std::process::id().to_string().as_bytes())?;
 
     let requeued = spool::requeue(&config.spool_dir(), &ingestor);
     if requeued > 0 {

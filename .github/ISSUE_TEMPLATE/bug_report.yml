@@ -1,0 +1,39 @@
+name: Bug report
+description: Something captured wrong, crashed, or didn't show up
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private reporting instead: https://github.com/groundstationhq/groundstation/security/advisories/new
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and version
+      placeholder: claude-code 2.1.3 / codex 0.155.0 / opencode 2.0.19 / pi 0.x
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `groundstation status` and `groundstation config`
+      description: The config output masks the upload token. Remove anything else you'd rather not share.
+      render: text
+  - type: textarea
+    id: trajectory
+    attributes:
+      label: Trajectory, if relevant
+      description: "`groundstation show <id> --json`, or the relevant events. Prompts and paths are yours to redact."
+      render: json
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x86_64

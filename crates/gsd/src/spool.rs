@@ -5,15 +5,16 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::api::SpoolItem;
 use crate::ingest::Ingestor;
+use crate::perms;
 
 pub fn write(dir: &Path, item: &SpoolItem) -> Result<PathBuf> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    perms::create_dir_all(dir)?;
     let name = format!(
         "{:020}-{}",
         Utc::now().timestamp_nanos_opt().unwrap_or(0),
@@ -21,7 +22,7 @@ pub fn write(dir: &Path, item: &SpoolItem) -> Result<PathBuf> {
     );
     let tmp = dir.join(format!(".{name}.tmp"));
     let path = dir.join(format!("{name}.json"));
-    std::fs::write(&tmp, serde_json::to_vec(item)?)?;
+    perms::write(&tmp, &serde_json::to_vec(item)?)?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
 }
@@ -68,7 +69,7 @@ pub fn drain(dir: &Path, ingestor: &Ingestor) -> usize {
             }
             Err(e) => {
                 tracing::warn!(path = %path.display(), "rejecting spooled payload: {e:#}");
-                let _ = std::fs::create_dir_all(dir.join(REJECTED));
+                let _ = perms::create_dir_all(&dir.join(REJECTED));
                 let name = path.with_extension("rejected");
                 let _ = std::fs::rename(
                     &path,
@@ -102,7 +103,7 @@ pub fn requeue(dir: &Path, ingestor: &Ingestor) -> usize {
 
 fn move_into(dir: &Path, sub: &str, path: &Path) {
     let target = dir.join(sub);
-    let _ = std::fs::create_dir_all(&target);
+    let _ = perms::create_dir_all(&target);
     let _ = std::fs::rename(path, target.join(path.file_name().unwrap_or_default()));
 }
 

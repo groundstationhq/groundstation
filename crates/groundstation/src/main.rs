@@ -404,12 +404,9 @@ fn connect(
                 println!("{}", serde_json::to_string_pretty(&settings)?);
                 return Ok(ExitCode::SUCCESS);
             }
-            let backup = groundstation_hooks_json::write(&path, &settings)?;
+            groundstation_hooks_json::write(&path, &settings)?;
             println!("Connected {} to Ground Station", agent.title());
             println!("  hooks in  {shown}");
-            if let Some(backup) = backup {
-                println!("  backup    {}", render::tilde(&backup.to_string_lossy()));
-            }
             let events: Vec<&str> = hooks.events.iter().map(|h| h.event).collect();
             println!("  events    {}", events.join(", "));
         }
@@ -531,12 +528,13 @@ async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<Exi
         return Ok(ExitCode::SUCCESS);
     }
 
-    std::fs::create_dir_all(config.data_dir())?;
+    gsd::perms::create_dir_all(&config.data_dir())?;
     let log_path = config.log_file();
-    let log = std::fs::OpenOptions::new()
+    let log = gsd::perms::open_options()
         .create(true)
         .append(true)
         .open(&log_path)?;
+    gsd::perms::restrict(&log_path, 0o600)?;
     let exe = std::env::current_exe()?;
     // Prefer the dedicated `gsd` binary installed alongside this one.
     let sibling = exe.with_file_name(format!("gsd{}", std::env::consts::EXE_SUFFIX));

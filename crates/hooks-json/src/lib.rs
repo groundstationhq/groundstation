@@ -162,11 +162,13 @@ pub fn read(path: &Path) -> Result<Value> {
     }
 }
 
-/// Writes `settings`, keeping a copy of the previous file next to it.
-/// Returns the backup's path, if there was a previous file.
-pub fn write(path: &Path, settings: &Value) -> Result<Option<PathBuf>> {
+/// Writes `settings`. The previous file is copied to `*.groundstation-backup`
+/// next to it for the duration of the write and removed once the write
+/// succeeds: a failed write never loses the original, and a successful one
+/// never leaves a second copy of a settings file that may hold API keys.
+pub fn write(path: &Path, settings: &Value) -> Result<()> {
     let backup = if path.exists() {
-        let backup = path.with_extension("json.groundstation-backup");
+        let backup = backup_path(path);
         std::fs::copy(path, &backup).with_context(|| format!("backing up {}", path.display()))?;
         Some(backup)
     } else {
@@ -177,8 +179,24 @@ pub fn write(path: &Path, settings: &Value) -> Result<Option<PathBuf>> {
     };
     let mut text = serde_json::to_string_pretty(settings)?;
     text.push('\n');
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
-    Ok(backup)
+    let written = std::fs::write(path, text).with_context(|| format!("writing {}", path.display()));
+    match (written, backup) {
+        (Ok(()), Some(backup)) => {
+            std::fs::remove_file(&backup)
+                .with_context(|| format!("removing {}", backup.display()))?;
+            Ok(())
+        }
+        (Ok(()), None) => Ok(()),
+        (Err(e), Some(backup)) => {
+            Err(e.context(format!("the previous file is at {}", backup.display())))
+        }
+        (Err(e), None) => Err(e),
+    }
+}
+
+/// Where the previous file waits while `write` runs.
+pub fn backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.groundstation-backup")
 }
 
 fn shell_quote(s: &str) -> String {
@@ -289,14 +307,16 @@ mod tests {
     }
 
     #[test]
-    fn read_write_round_trip_with_backup() {
+    fn read_write_round_trip_without_leaving_a_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/hooks.json");
         assert_eq!(read(&path).unwrap(), json!({}));
-        assert!(write(&path, &json!({"a": 1})).unwrap().is_none());
-        let backup = write(&path, &json!({"a": 2})).unwrap().unwrap();
-        assert_eq!(read(&backup).unwrap(), json!({"a": 1}));
+        write(&path, &json!({"a": 1})).unwrap();
+        // A backup an older version left behind is cleaned up too.
+        std::fs::write(backup_path(&path), "{}").unwrap();
+        write(&path, &json!({"a": 2})).unwrap();
         assert_eq!(read(&path).unwrap(), json!({"a": 2}));
+        assert!(!backup_path(&path).exists());
         std::fs::write(&path, "[1]").unwrap();
         assert!(read(&path).is_err());
     }

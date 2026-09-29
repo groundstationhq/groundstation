@@ -80,7 +80,7 @@ jobs:
           if [ "$version" != "$ws" ]; then echo "tag $tag does not match workspace version $ws" >&2; exit 1; fi
           name="groundstation-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/groundstation" "target/${{ matrix.target }}/release/gsd" LICENSE "dist/$name/"
+          cp "target/${{ matrix.target }}/release/groundstation" "target/${{ matrix.target }}/release/gsd" LICENSE NOTICE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4

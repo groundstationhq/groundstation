@@ -34,4 +34,4 @@ Corollaries:
 | `adapters/*` | one crate per agent, pure translation, no I/O |
 | `ui/` | the viewer; Vite + React + TypeScript |
 | `docs/gsd.md` | daemon and CLI internals; user docs live in the `landing_page` repo under `docs/` |
-| `product.md` | the product brief and roadmap |
+| `product.md` | the product brief and roadmap (kept locally, not in git) |

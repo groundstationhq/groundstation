@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 
 use crate::api::TrajectorySummary;
+use crate::perms;
 
 const MIGRATIONS: &[&str] = &[
     r#"
@@ -86,7 +87,19 @@ pub struct NewEvent {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            perms::create_dir_all(dir)?;
+        }
+        // Owner-only before SQLite opens it: the WAL and shm files SQLite adds
+        // copy the database file's mode. Files an older gsd left more open are
+        // tightened here too.
+        perms::touch(path)?;
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(suffix);
+            let side = Path::new(&side);
+            if side.exists() {
+                perms::restrict(side, 0o600)?;
+            }
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         Self::init(conn)

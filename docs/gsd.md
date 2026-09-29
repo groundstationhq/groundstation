@@ -91,7 +91,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 
 Because the daemon holds prompts and code, it only answers requests whose `Host` is a loopback name (which defeats DNS rebinding) and only accepts `application/json` bodies (browsers can't send those cross-origin without a preflight, and gsd never answers one).
 
-Run it with `groundstation daemon start|stop|status`, or in the foreground with `gsd` or `groundstation daemon run`. Data lives in `~/.local/share/groundstation` (`gsd.db`, `spool/`, `gsd.log`).
+Run it with `groundstation daemon start|stop|status`, or in the foreground with `gsd` or `groundstation daemon run`. Data lives in `~/.local/share/groundstation` (`gsd.db`, `spool/`, `gsd.log`), created readable by your user only.
 
 ## Configuration
 

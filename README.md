@@ -21,7 +21,7 @@
 
 <br>
 
-> **Pre-alpha.** The local slice works: `gsd` and the `groundstation` CLI capture Claude Code, Codex, OpenCode and pi sessions end to end and show them in the terminal ([`docs/gsd.md`](./docs/gsd.md)). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
+> **Pre-alpha.** The local slice works: `gsd` and the `groundstation` CLI capture Claude Code, Codex, OpenCode and pi sessions end to end and show them in the terminal and in the trajectory viewer ([`docs/gsd.md`](./docs/gsd.md)). There's no hosted backend yet and nothing is released. If you're here early: welcome.
 
 <br>
 
@@ -172,7 +172,6 @@ groundstation/
 ├── ui/                         trajectory viewer (Vite + React + TypeScript), see ui/README.md
 ├── assets/                     logo, banner, screenshots
 ├── STYLEGUIDE.md               visual language, telemetry conventions, copy voice, code rules
-├── product.md                  the product brief
 └── README.md
 ```
 
@@ -208,10 +207,10 @@ Don't try to support every agent. Instrument **one** coding agent so well that d
 
 ## Contributing
 
-Not open for contributions yet, but soon. Star or watch the repo to hear about the first `gsd` release.
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](./CONTRIBUTING.md) has the build, test and commit conventions, and [`SECURITY.md`](./SECURITY.md) explains how to report a vulnerability privately.
 
 ## License
 
-Apache-2.0. See [`LICENSE`](./LICENSE).
+Apache-2.0. See [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE). Copyright 2026 The Ground Station Authors.
 
 <p align="center"><sub>Every agent leaves a trajectory. Make it observable.</sub></p>

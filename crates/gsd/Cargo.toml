@@ -1,9 +1,12 @@
 [package]
 name = "gsd"
+description = "Ground Station local daemon: ingests, redacts, stores and serves agent telemetry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
