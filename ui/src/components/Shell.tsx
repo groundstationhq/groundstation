@@ -17,7 +17,8 @@ export function Mark({ size = 20 }: { size?: number }) {
 }
 
 const NAV = [
-  { href: "#/", label: "Trajectories", enabled: true },
+  { href: "#/", label: "Overview", enabled: true },
+  { href: "#/trajectories", label: "Trajectories", enabled: true },
   { href: "#/findings", label: "Findings", enabled: false },
   { href: "#/agents", label: "Agents", enabled: false },
 ];
@@ -37,7 +38,7 @@ export function Shell({ children, route }: { children: ReactNode; route: string 
             <nav className="hidden items-center gap-0.5 sm:flex" aria-label="Primary">
               {NAV.map((n) =>
                 n.enabled ? (
-                  <a key={n.href} href={n.href} aria-current={route.startsWith(n.href === "#/" ? "#/" : n.href) && (n.href !== "#/" || route === "#/" || route.startsWith("#/t/")) ? "page" : undefined} className={cx("rounded-md px-2.5 py-1.5 text-[12.5px] transition-colors hover:bg-bg-3 hover:text-fg", "aria-[current=page]:text-fg text-fg-3")}>
+                  <a key={n.href} href={n.href} aria-current={(n.href === "#/" ? route === "#/" || route === "" : route.startsWith(n.href) || (n.href === "#/trajectories" && route.startsWith("#/t/"))) ? "page" : undefined} className={cx("rounded-md px-2.5 py-1.5 text-[12.5px] transition-colors hover:bg-bg-3 hover:text-fg", "aria-[current=page]:text-fg text-fg-3")}>
                     {n.label}
                   </a>
                 ) : (

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { Overview } from "@/routes/Overview";
 import { Trajectories } from "@/routes/Trajectories";
 import { Trajectory } from "@/routes/Trajectory";
 
@@ -18,7 +19,7 @@ export default function App() {
   const m = route.match(/^#\/t\/(.+)$/);
   return (
     <Shell route={route}>
-      {m ? <Trajectory id={decodeURIComponent(m[1])} /> : <Trajectories />}
+      {m ? <Trajectory id={decodeURIComponent(m[1])} /> : route.startsWith("#/trajectories") ? <Trajectories /> : <Overview />}
     </Shell>
   );
 }

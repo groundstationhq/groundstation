@@ -212,7 +212,7 @@ function Header({ d }: { d: TrajectoryDetail }) {
   ];
   return (
     <div className="mb-4">
-      <a href="#/" className="mono text-[11px] text-fg-3 hover:text-fg">← trajectories</a>
+      <a href="#/trajectories" className="mono text-[11px] text-fg-3 hover:text-fg">← trajectories</a>
       <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-[17px] font-semibold tracking-tight text-fg">{d.title ?? <span className="text-fg-3">(no prompt captured)</span>}</h1>

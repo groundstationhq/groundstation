@@ -11,7 +11,8 @@ npm run typecheck
 
 Screens
 
-- `#/` trajectories: overview strip and the list, refreshed every 5s
+- `#/` overview: live totals, active agents, token composition and recent runs from the daemon; findings, trend charts and version comparison are mocked and marked "preview · v2"
+- `#/trajectories` the full list, refreshed every 5s
 - `#/t/:id` trajectory: minimap of the whole run, where the time went, longest tool calls, every event with an inspector, refreshed every 3s while running
 
 Conventions are in [`../STYLEGUIDE.md`](../STYLEGUIDE.md). Wire types in `src/lib/types.ts` mirror `crates/schema` and `crates/gsd/src/api.rs`; change both sides in the same PR.
