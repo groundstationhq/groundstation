@@ -1,6 +1,6 @@
 # gsd and the `groundstation` CLI
 
-The local half of Ground Station: the `gsd` daemon, the `groundstation` CLI, and the agent adapters (Claude Code and Codex).
+The local half of Ground Station: the `gsd` daemon, the `groundstation` CLI, and the agent adapters (Claude Code, Codex and OpenCode).
 
 | Crate | Binary | What it does |
 |---|---|---|
@@ -9,6 +9,7 @@ The local half of Ground Station: the `gsd` daemon, the `groundstation` CLI, and
 | [`crates/groundstation`](../crates/groundstation) | `groundstation` | CLI. Connects agents, runs their hooks, manages `gsd`, and shows trajectories |
 | [`adapters/claude-code`](../adapters/claude-code) | | Claude Code: installs hooks in `settings.json`, turns hook payloads and transcript lines into events. Sample payloads in `tests/fixtures/` |
 | [`adapters/codex`](../adapters/codex) | | OpenAI Codex (CLI, IDE and desktop app): installs hooks in `hooks.json`, turns hook payloads and rollout lines into events. Sample payloads in `tests/fixtures/` |
+| [`adapters/opencode`](../adapters/opencode) | | OpenCode v2+: generates a plugin (`plugins/groundstation.js`) that forwards OpenCode's event stream, and turns those events into Ground Station events. Sample payloads in `tests/fixtures/` |
 | [`crates/hooks-json`](../crates/hooks-json) | | Surgical install/uninstall of Ground Station hooks in the `hooks.json` shape both agents share |
 
 Each adapter implements the `Adapter` trait from [`crates/schema/src/adapter.rs`](../crates/schema/src/adapter.rs): pure translation from an agent's native payloads to events, with no I/O. `gsd` owns storage, privacy and transcript reading, and keeps raw payloads so they can be re-normalized when an adapter improves. Adding an agent means adding an `adapters/<agent>` crate, registering it in `gsd`'s `builtin_adapters()`, and adding it to the CLI's `connect` targets.
@@ -21,6 +22,7 @@ cargo install --path crates/groundstation
 
 groundstation connect claude-code   # installs hooks in ~/.claude/settings.json and starts gsd
 groundstation connect codex         # installs hooks in ~/.codex/hooks.json (then trust them in Codex: /hooks)
+groundstation connect opencode      # installs a plugin in ~/.config/opencode/plugins/ (OpenCode 2+)
 claude                              # use your agents as usual
 
 groundstation trajectories          # recent runs
@@ -44,9 +46,11 @@ longest tool calls
      47.2s  Bash cargo test
 ```
 
-Use `--scope project` to put the hooks in the repository (`.claude/settings.json`, `.codex/hooks.json`), or `--scope local` for Claude Code's `.claude/settings.local.json`. `groundstation disconnect <agent>` removes only Ground Station's hooks.
+Use `--scope project` to put the hooks in the repository (`.claude/settings.json`, `.codex/hooks.json`, `.opencode/plugins/`), or `--scope local` for Claude Code's `.claude/settings.local.json`. `groundstation disconnect <agent>` removes only Ground Station's hooks.
 
 **Codex trusts hooks explicitly.** Codex runs hooks it doesn't manage only after you review them: after `connect codex`, open Codex, run `/hooks` and trust the `groundstation hook codex` entries. Reconnecting changes the hooks' hash, so trust them again after that. Project hooks load only once the project's `.codex/` layer is trusted.
+
+**OpenCode 2+ uses a plugin, not hooks.** OpenCode has no command hooks; `connect opencode` checks that `opencode --version` is 2 or newer (v1 plugins don't load in v2 and vice versa) and writes `groundstation.js`, generated with gsd's address and the path of `groundstation` baked in. The plugin subscribes to OpenCode's event stream and `fetch`es the relevant events to gsd; when gsd is down it hands them to `groundstation hook opencode`, which spools them. Restart OpenCode (or `opencode service restart`) to load it. `disconnect opencode` deletes the file, and neither command touches a `groundstation.js` that Ground Station didn't write.
 
 ## How it works
 
@@ -62,7 +66,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 ```
 
 - **Hooks** give lifecycle, user turns and tool calls, timestamped when they fire. The hook never writes to stdout, never fails the agent, and gives up on the daemon quickly (250 ms to connect, 2 s total; Codex kills `SessionEnd` and `Interrupt` hooks at 3 s), spooling the payload to disk instead. `gsd` replies as soon as the hook's events are stored and reads transcripts afterwards, so a long transcript never slows the agent.
-- **Transcripts.** Hooks don't expose model usage, so `gsd` reads new lines from the session transcript to record each model response with its model, input, output and cache tokens: Claude Code's transcript (only under `~/.claude` or `$CLAUDE_CONFIG_DIR`) and Codex's rollout (`token_usage_record` lines, only under `~/.codex` or `$CODEX_HOME`). Codex counts cached tokens inside `input_tokens` and reasoning inside `output_tokens`; the adapter splits them so `in` always means uncached input, and keeps reasoning as `gs.usage.reasoning_output_tokens`. The read offset and any adapter state (Codex's current model) are saved per file, so each read continues where the last stopped.
+- **Transcripts.** Claude Code and Codex hooks don't expose model usage, so `gsd` reads new lines from the session transcript to record each model response with its model, input, output and cache tokens: Claude Code's transcript (only under `~/.claude` or `$CLAUDE_CONFIG_DIR`) and Codex's rollout (`token_usage_record` lines, only under `~/.codex` or `$CODEX_HOME`). Codex counts cached tokens inside `input_tokens` and reasoning inside `output_tokens`; the adapter splits them so `in` always means uncached input, and keeps reasoning as `gs.usage.reasoning_output_tokens`. The read offset and any adapter state (Codex's current model) are saved per file, so each read continues where the last stopped. OpenCode needs no transcript: its `session.step.ended` events carry each model call's tokens, dollar cost and dispatch time (so latency too), and tool events carry OpenCode's own timings.
 - **Idempotent everywhere.** Event ids are derived from the hook invocation or the transcript's message/response id, so retries, spool replays and transcript re-reads never double-count.
 - **Spans.** `tool.started` and `tool.completed`/`tool.failed` share a `span_id`, and `gsd` computes `gs.duration_ms` on the closing event.
 
@@ -73,7 +77,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 | Endpoint | |
 |---|---|
 | `POST /v1/events` | A `groundstation.telemetry.v0` batch, for SDKs and custom agents |
-| `POST /v1/adapters/{name}` | An agent's hook payload wrapped in a `HookEnvelope`, translated by that adapter (`claude-code`, `codex`) |
+| `POST /v1/adapters/{name}` | An agent's hook payload wrapped in a `HookEnvelope`, translated by that adapter (`claude-code`, `codex`, `opencode`) |
 | `GET /v1/trajectories?limit=N` | Trajectory summaries, most recent first |
 | `GET /v1/trajectories/{id}` | One trajectory and its events (unique id prefixes work) |
 | `GET /v1/health` | Status, counters and transport mode |
@@ -121,23 +125,26 @@ All of it runs inside `gsd`, before anything is written to disk or uploaded:
 
 Events carry an `id`, `trajectory_id`, `kind`, `timestamp`, `agent`, an optional `span_id`, and `attributes`. Attributes use OpenTelemetry `gen_ai.*` names where a convention exists and `gs.*` for everything else (see [`crates/schema/src/attr.rs`](../crates/schema/src/attr.rs)).
 
-| Kind | Claude Code | Codex |
-|---|---|---|
-| `agent.started` / `agent.resumed` | `SessionStart` | `SessionStart` |
-| `agent.completed` | `SessionEnd` | `SessionEnd` |
-| `turn.user` | `UserPromptSubmit` | `UserPromptSubmit` |
-| `turn.completed` | `Stop` | `Stop` |
-| `turn.interrupted` | | `Interrupt` |
-| `tool.started` | `PreToolUse` | `PreToolUse` |
-| `tool.completed` / `tool.failed` | `PostToolUse` / `PostToolUseFailure` | `PostToolUse` (failed when the exit code is non-zero) |
-| `subagent.started` / `subagent.completed` | `SubagentStart` / `SubagentStop` | `SubagentStart` / `SubagentStop` |
-| `context.compacted` | `PreCompact` | `PreCompact` |
-| `agent.notification` | `Notification` | `PermissionRequest` |
-| `model.completed` | session transcript | rollout `token_usage_record` |
+| Kind | Claude Code | Codex | OpenCode (event) |
+|---|---|---|---|
+| `agent.started` / `agent.resumed` | `SessionStart` | `SessionStart` | `session.created` |
+| `agent.completed` | `SessionEnd` | `SessionEnd` | `session.deleted` |
+| `agent.failed` | | | `session.execution.failed` |
+| `turn.user` | `UserPromptSubmit` | `UserPromptSubmit` | `session.inbox.enqueued` (user item) |
+| `turn.completed` | `Stop` | `Stop` | `session.execution.succeeded` |
+| `turn.interrupted` | | `Interrupt` | `session.execution.interrupted` |
+| `tool.started` | `PreToolUse` | `PreToolUse` | `session.tool.called` |
+| `tool.completed` / `tool.failed` | `PostToolUse` / `PostToolUseFailure` | `PostToolUse` (failed when the exit code is non-zero) | `session.tool.success` / `session.tool.failed` (or non-zero exit) |
+| `subagent.started` / `subagent.completed` | `SubagentStart` / `SubagentStop` | `SubagentStart` / `SubagentStop` | child `session.created` / child `session.execution.*` |
+| `context.compacted` | `PreCompact` | `PreCompact` | `session.compaction.started` |
+| `agent.notification` | `Notification` | `PermissionRequest` | `permission.asked` |
+| `model.completed` | session transcript | rollout `token_usage_record` | `session.step.ended` / `step.failed` / `compaction.ended` |
+
+OpenCode subagents run as child sessions; the plugin tracks each session's parent and gsd folds child sessions into the root session's trajectory, marking their model and tool calls as `gs.sidechain`. OpenCode is also the only agent that reports cost, so `gs.cost.usd` (and `cost_usd` on trajectory summaries) is currently OpenCode-only.
 
 Codex fires tool hooks for shell commands, `apply_patch` (reported with the patched files), MCP tools and local function tools; hosted tools such as web search fire none, so they don't appear as tool calls.
 
-Unknown hook events are kept as `claude_code.<name>` or `codex.<name>`, and unknown kinds round-trip, so older daemons accept newer producers.
+Unknown hook events are kept as `claude_code.<name>`, `codex.<name>` or `opencode.<event>`, and unknown kinds round-trip, so older daemons accept newer producers.
 
 ## Development
 

@@ -9,10 +9,17 @@ use gsd::api::{TrajectoryDetail, TrajectorySummary};
 use serde_json::Value;
 
 pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
+    let ids = short_ids(&rows.iter().map(|t| t.id.as_str()).collect::<Vec<_>>());
+    let width = ids
+        .iter()
+        .map(|id| id.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max(2);
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  TASK",
+        "{:<width$}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  TASK",
         "ID",
         "AGENT",
         "STATUS",
@@ -26,7 +33,7 @@ pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
         "CACHE-R",
         "OUT"
     );
-    for t in rows {
+    for (t, id) in rows.iter().zip(&ids) {
         let tools = if t.tool_errors > 0 {
             format!("{} ({}✕)", t.tool_calls, t.tool_errors)
         } else {
@@ -40,8 +47,8 @@ pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
         };
         let _ = writeln!(
             out,
-            "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  {}",
-            short_id(&t.id),
+            "{:<width$}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  {}",
+            id,
             truncate(&t.agent, 11),
             t.status,
             t.started_at.with_timezone(&Local).format("%m-%d %H:%M"),
@@ -109,6 +116,9 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
             tokens(t.output_tokens),
         );
     }
+    if t.cost_usd > 0.0 {
+        let _ = writeln!(out, "cost     {}", usd(t.cost_usd));
+    }
     out.push('\n');
 
     let cwd = t.cwd.as_deref();
@@ -158,12 +168,13 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
                     ""
                 };
                 Some(format!(
-                    "◆ {:<12} in {:>6}  cache-w {:>6}  cache-r {:>6}  out {:>6}  {model}{side}",
+                    "◆ {:<12} in {:>6}  cache-w {:>6}  cache-r {:>6}  out {:>6}  {model}{side}{extra}",
                     "model",
                     tokens(n(attr::GEN_AI_INPUT_TOKENS)),
                     tokens(n(attr::CACHE_CREATION_TOKENS)),
                     tokens(n(attr::CACHE_READ_TOKENS)),
                     tokens(n(attr::GEN_AI_OUTPUT_TOKENS)),
+                    extra = model_extra(ev),
                 ))
             }
             EventKind::TurnCompleted => Some("■ turn done".to_string()),
@@ -292,6 +303,33 @@ fn offset(start: DateTime<Utc>, at: DateTime<Utc>) -> String {
     format!("+{m}:{s:02}.{ms:03}")
 }
 
+/// Latency, cost and purpose of a model call, when the agent reports them.
+fn model_extra(ev: &Event) -> String {
+    let mut parts = Vec::new();
+    if let Some(ms) = ev.get(attr::DURATION_MS).and_then(Value::as_i64) {
+        parts.push(duration(ms));
+    }
+    if let Some(cost) = ev.get(attr::COST_USD).and_then(Value::as_f64) {
+        parts.push(usd(cost));
+    }
+    if let Some(purpose) = ev.get(attr::MODEL_PURPOSE).and_then(Value::as_str) {
+        parts.push(format!("({purpose})"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", parts.join("  "))
+    }
+}
+
+pub fn usd(amount: f64) -> String {
+    if amount < 0.01 {
+        format!("${amount:.4}")
+    } else {
+        format!("${amount:.2}")
+    }
+}
+
 pub fn duration(ms: i64) -> String {
     match ms {
         ms if ms < 1000 => format!("{ms}ms"),
@@ -309,8 +347,26 @@ pub fn tokens(n: u64) -> String {
     }
 }
 
-pub fn short_id(id: &str) -> &str {
-    id.get(..8).unwrap_or(id)
+/// The shortest id prefixes (at least 8 characters after any `xyz_` type
+/// prefix, as in OpenCode's `ses_…`) that still tell the rows apart.
+fn short_ids(ids: &[&str]) -> Vec<String> {
+    let min = |id: &str| {
+        let prefix = id.find('_').filter(|&i| i <= 4).map_or(0, |i| i + 1);
+        prefix + 8
+    };
+    let mut extra = 0;
+    loop {
+        let short: Vec<String> = ids
+            .iter()
+            .map(|id| id.chars().take(min(id) + extra).collect())
+            .collect();
+        let unique: std::collections::HashSet<&String> = short.iter().collect();
+        let longest = ids.iter().map(|id| id.chars().count()).max().unwrap_or(0);
+        if unique.len() == short.len() || min("") + extra >= longest {
+            return short;
+        }
+        extra += 1;
+    }
 }
 
 pub fn tilde(path: &str) -> String {
@@ -362,6 +418,16 @@ mod tests {
         assert_eq!(duration(258_000), "4m18s");
         assert_eq!(duration(3_900_000), "1h05m");
         assert_eq!(tokens(84_214), "84.2k");
+        assert_eq!(
+            short_ids(&["ses_f131be2e4ffeS8", "ses_f131be2e5aaaX1", "07404509-96b9"]),
+            ["ses_f131be2e4", "ses_f131be2e5", "07404509-"]
+        );
+        assert_eq!(
+            short_ids(&["07404509-96b9", "966a5ec0-1111"]),
+            ["07404509", "966a5ec0"]
+        );
+        assert_eq!(usd(0.4712), "$0.47");
+        assert_eq!(usd(0.0031), "$0.0031");
         assert_eq!(tokens(1_250_000), "1.2M");
         assert_eq!(truncate("héllo", 3), "hé…");
         assert_eq!(one_line("\n  cargo test\n  --all", 40), "cargo test …");

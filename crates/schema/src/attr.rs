@@ -39,6 +39,10 @@ pub const CACHE_CREATION_TOKENS: &str = "gs.usage.cache_creation_input_tokens";
 pub const REASONING_TOKENS: &str = "gs.usage.reasoning_output_tokens";
 pub const REQUEST_ID: &str = "gs.request.id";
 pub const MODEL_TOOL_USES: &str = "gs.model.tool_uses";
+/// Why a model call happened when it isn't the agent's own turn (e.g. `compaction`).
+pub const MODEL_PURPOSE: &str = "gs.model.purpose";
+/// Cost of a model call in US dollars, as reported by the agent.
+pub const COST_USD: &str = "gs.cost.usd";
 
 // Tool calls.
 pub const TOOL_CATEGORY: &str = "gs.tool.category";

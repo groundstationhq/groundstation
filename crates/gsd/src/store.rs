@@ -428,7 +428,8 @@ SELECT t.id, t.agent, t.agent_version, t.title, t.status, t.cwd, t.repository, t
        COALESCE(SUM(json_extract(e.attributes, '$."gen_ai.usage.input_tokens"')), 0),
        COALESCE(SUM(json_extract(e.attributes, '$."gen_ai.usage.output_tokens"')), 0),
        COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_read_input_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_creation_input_tokens"')), 0)
+       COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_creation_input_tokens"')), 0),
+       COALESCE(SUM(json_extract(e.attributes, '$."gs.cost.usd"')), 0.0)
 FROM trajectories t LEFT JOIN events e ON e.trajectory_id = t.id
 "#;
 
@@ -459,6 +460,7 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<TrajectorySummary> {
         output_tokens: count(r, 18)?,
         cache_read_tokens: count(r, 19)?,
         cache_creation_tokens: count(r, 20)?,
+        cost_usd: r.get::<_, f64>(21)?,
     })
 }
 

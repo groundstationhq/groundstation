@@ -72,6 +72,9 @@ pub struct TrajectorySummary {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// Sum of `gs.cost.usd`; 0 when the agent doesn't report cost.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 impl TrajectorySummary {

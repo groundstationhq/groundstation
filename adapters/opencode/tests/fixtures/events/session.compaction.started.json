@@ -1,0 +1,18 @@
+{
+  "event": {
+    "id": "evt_session_compaction_started",
+    "created": 1790604245000,
+    "type": "session.compaction.started",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+      "reason": "auto",
+      "recent": ""
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "version": "2.0.19"
+}

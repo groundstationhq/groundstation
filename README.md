@@ -21,7 +21,7 @@
 
 <br>
 
-> **Pre-alpha.** The local slice works: `gsd` and the `groundstation` CLI capture Claude Code and Codex sessions end to end and show them in the terminal ([`docs/gsd.md`](./docs/gsd.md)). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
+> **Pre-alpha.** The local slice works: `gsd` and the `groundstation` CLI capture Claude Code, Codex and OpenCode sessions end to end and show them in the terminal ([`docs/gsd.md`](./docs/gsd.md)). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
 
 <br>
 
@@ -165,7 +165,8 @@ groundstation/
 │   └── hooks-json/             shared editing of agent hook configs (Claude Code, Codex)
 ├── adapters/
 │   ├── claude-code/            hook install + payload/transcript normalization, with sample fixtures
-│   └── codex/                  same for OpenAI Codex (hooks.json + rollout token usage)
+│   ├── codex/                  same for OpenAI Codex (hooks.json + rollout token usage)
+│   └── opencode/               OpenCode v2+: generated event-forwarding plugin + normalization
 ├── ui/                         trajectory viewer (Vite + React + TypeScript), see ui/README.md
 ├── assets/                     logo, banner, screenshots
 ├── STYLEGUIDE.md               visual language, telemetry conventions, copy voice, code rules

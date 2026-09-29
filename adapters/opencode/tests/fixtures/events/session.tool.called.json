@@ -1,0 +1,24 @@
+{
+  "event": {
+    "id": "evt_session_tool_called",
+    "created": 1790604195310,
+    "type": "session.tool.called",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+      "assistantMessageID": "msg_a1",
+      "id": "call_bash1",
+      "input": {
+        "command": "cargo test -p checkout",
+        "description": "Run checkout tests"
+      },
+      "executed": true
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "tool": "bash",
+  "version": "2.0.19"
+}

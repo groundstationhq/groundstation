@@ -1,0 +1,30 @@
+{
+  "event": {
+    "id": "evt_session_step_failed",
+    "created": 1790604244000,
+    "type": "session.step.failed",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+      "assistantMessageID": "msg_a3",
+      "error": {
+        "type": "APIError",
+        "message": "rate limit exceeded",
+        "status": 429
+      }
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "step": {
+    "model": {
+      "id": "claude-opus-5-5",
+      "providerID": "anthropic"
+    },
+    "agent": "build",
+    "started": 1790604243500
+  },
+  "version": "2.0.19"
+}

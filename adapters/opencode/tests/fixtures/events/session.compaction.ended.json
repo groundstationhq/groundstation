@@ -1,0 +1,31 @@
+{
+  "event": {
+    "id": "evt_session_compaction_ended",
+    "created": 1790604249000,
+    "type": "session.compaction.ended",
+    "location": {
+      "directory": "/Users/dev/src/shop"
+    },
+    "data": {
+      "sessionID": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+      "reason": "auto",
+      "model": {
+        "id": "claude-opus-5-5",
+        "providerID": "anthropic"
+      },
+      "cost": 0.0105,
+      "tokens": {
+        "input": 900,
+        "output": 450,
+        "reasoning": 0,
+        "cache": {
+          "read": 40000,
+          "write": 0
+        }
+      }
+    }
+  },
+  "root_session_id": "ses_01J9ZK3Q7M2X8C4V6B1N5D0F2A",
+  "directory": "/Users/dev/src/shop",
+  "version": "2.0.19"
+}

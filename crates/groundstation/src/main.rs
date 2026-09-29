@@ -13,6 +13,7 @@ use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use groundstation_adapter_claude_code as claude_code;
 use groundstation_adapter_codex as codex;
+use groundstation_adapter_opencode as opencode;
 use groundstation_hooks_json::HookSet;
 use gsd::api::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
@@ -97,6 +98,16 @@ enum DaemonAction {
 enum AgentName {
     ClaudeCode,
     Codex,
+    /// OpenCode v2 or newer.
+    Opencode,
+}
+
+/// How an agent is connected.
+enum Integration {
+    /// Command hooks in a `hooks.json`-shaped config (Claude Code, Codex).
+    Hooks(HookSet),
+    /// A generated plugin file (OpenCode).
+    OpenCodePlugin,
 }
 
 impl AgentName {
@@ -105,6 +116,7 @@ impl AgentName {
         match self {
             Self::ClaudeCode => claude_code::NAME,
             Self::Codex => codex::NAME,
+            Self::Opencode => opencode::NAME,
         }
     }
 
@@ -112,17 +124,19 @@ impl AgentName {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::Opencode => "OpenCode",
         }
     }
 
-    fn hooks(self) -> HookSet {
+    fn integration(self) -> Integration {
         match self {
-            Self::ClaudeCode => claude_code::settings::HOOKS,
-            Self::Codex => codex::settings::HOOKS,
+            Self::ClaudeCode => Integration::Hooks(claude_code::settings::HOOKS),
+            Self::Codex => Integration::Hooks(codex::settings::HOOKS),
+            Self::Opencode => Integration::OpenCodePlugin,
         }
     }
 
-    /// The hook config file `connect` and `disconnect` edit.
+    /// The file `connect` and `disconnect` edit.
     fn config_path(self, scope: Scope) -> Result<PathBuf> {
         match self {
             Self::ClaudeCode => claude_code::settings::settings_path(match scope {
@@ -137,16 +151,27 @@ impl AgentName {
                     bail!("Codex has no local hooks file; use --scope project or --scope user")
                 }
             }),
+            Self::Opencode => opencode::settings::plugin_path(match scope {
+                Scope::User => opencode::settings::Scope::User,
+                Scope::Project => opencode::settings::Scope::Project,
+                Scope::Local => {
+                    bail!(
+                        "OpenCode has no local plugin directory; use --scope project or --scope user"
+                    )
+                }
+            }),
         }
     }
 }
 
-/// Which hook config `connect` and `disconnect` edit.
+/// Which config `connect` and `disconnect` edit.
 #[derive(Clone, Copy, ValueEnum)]
 enum Scope {
-    /// Every project on this machine (~/.claude/settings.json, ~/.codex/hooks.json).
+    /// Every project on this machine (~/.claude/settings.json, ~/.codex/hooks.json,
+    /// ~/.config/opencode/plugins/).
     User,
-    /// This project, shared with the team (.claude/settings.json, .codex/hooks.json).
+    /// This project, shared with the team (.claude/settings.json, .codex/hooks.json,
+    /// .opencode/plugins/).
     Project,
     /// This project, just for you (.claude/settings.local.json). Claude Code only.
     Local,
@@ -187,14 +212,25 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => connect(&config, config_path, agent, scope, dry_run, no_start),
         Command::Disconnect { agent, scope } => {
             let path = agent.config_path(scope)?;
-            let mut settings = groundstation_hooks_json::read(&path)?;
-            let removed = agent.hooks().uninstall(&mut settings);
             let shown = render::tilde(&path.to_string_lossy());
-            if removed == 0 {
-                println!("No Ground Station hooks in {shown}");
-            } else {
-                groundstation_hooks_json::write(&path, &settings)?;
-                println!("Removed {removed} hooks from {shown}");
+            match agent.integration() {
+                Integration::Hooks(hooks) => {
+                    let mut settings = groundstation_hooks_json::read(&path)?;
+                    let removed = hooks.uninstall(&mut settings);
+                    if removed == 0 {
+                        println!("No Ground Station hooks in {shown}");
+                    } else {
+                        groundstation_hooks_json::write(&path, &settings)?;
+                        println!("Removed {removed} hooks from {shown}");
+                    }
+                }
+                Integration::OpenCodePlugin => {
+                    if opencode::settings::uninstall(&path)? {
+                        println!("Removed the Ground Station plugin {shown}");
+                    } else {
+                        println!("No Ground Station plugin at {shown}");
+                    }
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -228,7 +264,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else if rows.is_empty() {
                 println!(
-                    "No trajectories yet. Connect an agent with `groundstation connect claude-code` or `groundstation connect codex`."
+                    "No trajectories yet. Connect an agent: `groundstation connect claude-code|codex|opencode`."
                 );
             } else {
                 print!("{}", render::trajectory_table(&rows));
@@ -310,23 +346,43 @@ fn connect(
 ) -> Result<ExitCode> {
     let exe = std::env::current_exe().context("locating the groundstation binary")?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    let hooks = agent.hooks();
     let path = agent.config_path(scope)?;
-    let mut settings = groundstation_hooks_json::read(&path)?;
-    hooks.install(&mut settings, &hooks.command(&exe))?;
-    if dry_run {
-        println!("{}", serde_json::to_string_pretty(&settings)?);
-        return Ok(ExitCode::SUCCESS);
+    let shown = render::tilde(&path.to_string_lossy());
+    match agent.integration() {
+        Integration::Hooks(hooks) => {
+            let mut settings = groundstation_hooks_json::read(&path)?;
+            hooks.install(&mut settings, &hooks.command(&exe))?;
+            if dry_run {
+                println!("{}", serde_json::to_string_pretty(&settings)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            let backup = groundstation_hooks_json::write(&path, &settings)?;
+            println!("Connected {} to Ground Station", agent.title());
+            println!("  hooks in  {shown}");
+            if let Some(backup) = backup {
+                println!("  backup    {}", render::tilde(&backup.to_string_lossy()));
+            }
+            let events: Vec<&str> = hooks.events.iter().map(|h| h.event).collect();
+            println!("  events    {}", events.join(", "));
+        }
+        Integration::OpenCodePlugin => {
+            let version = opencode_version()?;
+            let source = opencode::settings::render(&config.base_url(), &exe);
+            if dry_run {
+                print!("{source}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let replaced = opencode::settings::install(&path, &source)?;
+            println!("Connected {} to Ground Station", agent.title());
+            match version {
+                Some(v) => println!("  opencode  {v}"),
+                None => println!("  opencode  not found on PATH; install OpenCode 2 or newer"),
+            }
+            let verb = if replaced { "updated" } else { "written" };
+            println!("  plugin    {shown} ({verb})");
+            println!("  events    {}", opencode::settings::EVENTS.join(", "));
+        }
     }
-    let backup = groundstation_hooks_json::write(&path, &settings)?;
-
-    println!("Connected {} to Ground Station", agent.title());
-    println!("  hooks in  {}", render::tilde(&path.to_string_lossy()));
-    if let Some(backup) = backup {
-        println!("  backup    {}", render::tilde(&backup.to_string_lossy()));
-    }
-    let events: Vec<&str> = hooks.events.iter().map(|h| h.event).collect();
-    println!("  events    {}", events.join(", "));
     println!();
     if no_start {
         println!(
@@ -340,11 +396,31 @@ fn connect(
         println!("Codex runs new hooks only after you trust them: open Codex, run /hooks,");
         println!("and trust the `groundstation hook codex` entries (once per change).");
     }
+    if let AgentName::Opencode = agent {
+        println!();
+        println!("OpenCode loads plugins when its server starts: restart open sessions,");
+        println!("or run `opencode service restart` if the background service is running.");
+    }
     println!(
         "New {} sessions will appear in `groundstation trajectories`.",
         agent.title()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// The installed OpenCode version, or `None` if `opencode` isn't on PATH.
+/// Fails for versions older than the plugin API the adapter targets.
+fn opencode_version() -> Result<Option<String>> {
+    let output = match std::process::Command::new("opencode")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("running `opencode --version`"),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    opencode::settings::check_version(&text).map(Some)
 }
 
 /// Adapters this CLI can connect that the running gsd doesn't know: it

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, bail};
 use groundstation_adapter_claude_code::ClaudeCode;
 use groundstation_adapter_codex::Codex;
+use groundstation_adapter_opencode::OpenCode;
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
 use crate::api::SpoolItem;
@@ -18,7 +19,7 @@ use crate::store::{NewEvent, Store};
 
 /// Every adapter this build of gsd understands.
 pub fn builtin_adapters() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(ClaudeCode), Box::new(Codex)]
+    vec![Box::new(ClaudeCode), Box::new(Codex), Box::new(OpenCode)]
 }
 
 struct Registered {
@@ -479,6 +480,95 @@ mod tests {
         assert_eq!(
             model.get(attr::GEN_AI_RESPONSE_MODEL),
             Some(&json!("gpt-6-codex"))
+        );
+    }
+
+    #[test]
+    fn opencode_cost_and_subagents_roll_up() {
+        let ing = ingestor();
+        let event = |id: &str,
+                     created: i64,
+                     session: &str,
+                     kind: &str,
+                     data: serde_json::Value,
+                     extra: serde_json::Value| {
+            let mut payload = json!({
+                "event": {"id": id, "created": created, "type": kind, "data": data},
+                "root_session_id": "ses_root", "directory": "/nonexistent",
+            });
+            payload["event"]["data"]["sessionID"] = json!(session);
+            payload
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            HookEnvelope {
+                id: Uuid::now_v7(),
+                observed_at: Utc::now(),
+                payload,
+            }
+        };
+        let usage = |cost: f64| {
+            json!({"assistantMessageID": format!("m{cost}"), "cost": cost,
+            "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 100, "write": 0}}})
+        };
+        let t0 = 1_790_604_191_000;
+        for env in [
+            event(
+                "evt_1",
+                t0,
+                "ses_root",
+                "session.created",
+                json!({"version": "2.0.19"}),
+                json!({}),
+            ),
+            event(
+                "evt_2",
+                t0 + 10,
+                "ses_root",
+                "session.step.ended",
+                usage(0.25),
+                json!({"step": {"started": t0 + 5}}),
+            ),
+            event(
+                "evt_3",
+                t0 + 20,
+                "ses_child",
+                "session.created",
+                json!({"parentID": "ses_root", "agent": "explore"}),
+                json!({}),
+            ),
+            event(
+                "evt_4",
+                t0 + 30,
+                "ses_child",
+                "session.step.ended",
+                usage(0.5),
+                json!({}),
+            ),
+            event(
+                "evt_5",
+                t0 + 40,
+                "ses_root",
+                "session.execution.succeeded",
+                json!({}),
+                json!({}),
+            ),
+        ] {
+            ing.ingest_hook_now("opencode", env).unwrap();
+        }
+        let (summary, _) = ing.store.trajectory("ses_root").unwrap().unwrap();
+        assert_eq!(summary.agent_version.as_deref(), Some("2.0.19"));
+        assert_eq!(summary.model_calls, 2);
+        assert!(
+            (summary.cost_usd - 0.75).abs() < 1e-9,
+            "{}",
+            summary.cost_usd
+        );
+        assert_eq!(summary.cache_read_tokens, 200);
+        assert_eq!(summary.status, "idle");
+        assert!(
+            ing.store.trajectory("ses_child").unwrap().is_none(),
+            "child folded into root"
         );
     }
 }

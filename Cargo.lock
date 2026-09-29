@@ -542,6 +542,7 @@ dependencies = [
  "clap",
  "groundstation-adapter-claude-code",
  "groundstation-adapter-codex",
+ "groundstation-adapter-opencode",
  "groundstation-hooks-json",
  "groundstation-schema",
  "gsd",
@@ -579,6 +580,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-adapter-opencode"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "groundstation-schema",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "groundstation-hooks-json"
 version = "0.1.0"
 dependencies = [
@@ -609,6 +622,7 @@ dependencies = [
  "gethostname",
  "groundstation-adapter-claude-code",
  "groundstation-adapter-codex",
+ "groundstation-adapter-opencode",
  "groundstation-schema",
  "hex",
  "http-body-util",
