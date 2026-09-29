@@ -1,22 +1,47 @@
-# Ground Station
+<p align="center">
+  <a href="https://groundstation.sh"><img src="assets/banner.png" alt="Ground Station — open-source observability for AI agents" width="100%"></a>
+</p>
 
-**Open-source observability for AI agents.** Agent Platform Monitoring.
+<h1 align="center">
+  <img src="assets/logo.svg" width="28" height="28" alt="" align="top">&nbsp;Ground Station
+</h1>
 
-Ground Station captures every model call, tool call, token and millisecond of an agent's execution, reconstructs it as a **trajectory**, and tells you why it was slow, what it cost, and what to change.
+<p align="center">
+  <strong>Open-source observability for AI agents.</strong><br>
+  Capture every model call, tool call and token. Reconstruct the trajectory. Know why it was slow, what it cost, and what to change.
+</p>
 
-> Status: pre-alpha. The Cargo workspace is scaffolded (schema, daemon, CLI); there is no backend or UI yet and nothing is released. See [`product.md`](./product.md) for the full product thinking.
+<p align="center">
+  <a href="https://groundstation.sh"><img alt="Website" src="https://img.shields.io/badge/groundstation.sh-website-3ee0c0?style=flat-square&labelColor=0f1012"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-pre--alpha-f5b83d?style=flat-square&labelColor=0f1012">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.88%2B-ededef?style=flat-square&labelColor=0f1012">
+  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-ededef?style=flat-square&labelColor=0f1012">
+  <img alt="Category" src="https://img.shields.io/badge/category-Agent%20Platform%20Monitoring-6f7076?style=flat-square&labelColor=0f1012">
+</p>
 
-Website: [groundstation.sh](https://groundstation.sh) · Org: [github.com/groundstationhq](https://github.com/groundstationhq)
+<br>
 
----
+> **Pre-alpha.** The Cargo workspace is scaffolded (schema, daemon, CLI). There's no backend or UI yet and nothing is released. If you're here early: welcome, and read [`product.md`](./product.md) for the full thinking.
 
-## Why
+<br>
 
-Agents are production systems, but they don't fail like services. A request returns HTTP 200 in 214 ms and the dashboard stays green while the agent behind it re-runs the same test suite 18 times, re-reads an unchanged file 27 times, fills its context window with stale tool output and burns $2.81 on a task that should cost $0.40.
+## The problem, in one screenshot
 
-Infrastructure monitoring sees the machine. Ground Station sees the execution.
+A request returns `HTTP 200` in 214 ms. CPU is at 38%. Every dashboard is green. Meanwhile the agent behind that request re-ran the same test suite 18 times, re-read an unchanged file 27 times, filled its context window with stale test output, and spent $2.81 on a task that should have cost forty cents.
 
-The core abstraction is not the request. It is the **trajectory**: one complete agent run, from prompt to completion, with every turn, model call, tool call, observation and subagent in order, carrying the dimensions that matter (time, tokens, latency, cost, status).
+Infrastructure monitoring sees the machine. **Ground Station sees the execution.**
+
+<p align="center">
+  <img src="assets/trajectory-viewer.png" alt="Trajectory viewer: a coding agent fixing flaky checkout tests, with two 47-second cargo test runs dominating the timeline" width="640">
+</p>
+
+<p align="center"><sub>A real-feeling trajectory: <em>"Fix the flaky checkout tests."</em> Four model calls, seven tool calls, 126,467 tokens, $0.39, and 94 of 103 seconds spent inside <code>cargo test</code>.</sub></p>
+
+<br>
+
+## The trajectory is the primitive
+
+Requests have traces. Agents have **trajectories**: one complete run from prompt to completion, with every turn, model call, tool call, observation and subagent in order, carrying the dimensions that matter.
 
 ```text
 Trajectory
@@ -26,108 +51,140 @@ Trajectory
 ├── Tool call        grep            "timeout"                     31ms
 ├── Model call       claude-sonnet   21.4k → 1.4k tokens   1.2s
 ├── Tool call        edit_file       tests/checkout_test.rs  +14 −7
-├── Tool call        shell           cargo test           47.2s   exit 101
+├── Tool call        shell           cargo test           47.2s   exit 101   ◀ the expensive part
 ├── Model call       claude-sonnet   38.7k → 1.9k tokens   2.4s
 ├── Tool call        shell           cargo test           46.9s   exit 0
 └── Complete         1m 43s · 4 model calls · 7 tool calls · 126,467 tokens · $0.39
 ```
 
-## What it does
+Ground Station captures all of it: model calls, tool calls, turns, context, tokens, latency, errors, cost, file reads and writes, shell commands, browser actions, subagents. Then it turns that data into something you can actually use.
 
-The product climbs the DIKW hierarchy, and the hierarchy is also the roadmap:
+<br>
 
-| Level | Question | Ground Station | Version |
-|---|---|---|---|
-| **Data** | What happened? | Capture every event: model, tool, file, shell, browser, subagent, lifecycle | v0 |
-| **Information** | What is happening? | Reconstruct events into a readable trajectory with metrics | v1 |
-| **Knowledge** | Why is it happening? | Detect patterns: repeated commands, duplicate reads, context growth, regressions between agent versions | v2 |
-| **Action** | What should change? | Recommend changes with estimated impact, grounded in the trajectory | v3 |
+## From events to answers
 
-The founding thesis: **perfect data → exceptional information.** v0 does not need AI analysis. It needs to capture everything, losslessly and safely. Knowledge and action become possible once enough high-quality trajectories exist.
+The product climbs a hierarchy, and the hierarchy is also the roadmap.
 
-## Architecture
+| | Question | What Ground Station does | |
+|:--|:--|:--|:--|
+| **Data** | What happened? | Capture every event, losslessly: model, tool, file, shell, browser, subagent, lifecycle. | `v0` |
+| **Information** | What is happening? | Reconstruct thousands of events into one trajectory you can read top to bottom. | `v1` |
+| **Knowledge** | Why is it happening? | Find the patterns: repeated commands, duplicate reads, context growth, regressions between agent versions. | `v2` |
+| **Action** | What should change? | Recommend changes with estimated impact, grounded in the exact trajectory that produced them. | `v3` |
+
+The founding bet is simple: **perfect data → exceptional information.** v0 doesn't need AI analysis. It needs to capture everything, safely. Once enough high-quality trajectories exist, knowledge and action follow.
+
+A taste of where this goes:
+
+```text
+OPTIMIZATION OPPORTUNITY                                        rec_7d2e · confidence 0.91
+
+61% of this trajectory was spent executing `cargo test`.
+The agent ran the full suite 18 times, once after every edit.
+
+Recommendation
+  Run the affected package's tests during iteration.
+  Execute the complete suite once before completion.
+
+Estimated impact     runtime −48%     tool calls −17     compute −43%
+```
+
+<br>
+
+## How it fits together
 
 ```text
 Claude Code ─┐
-Codex        ├──►  gsd  ──►  Ground Station backend  ──►  UI
-OpenCode     │   (local Rust daemon)      (ingest · ClickHouse · query)
+Codex        ├──►  gsd  ──────────►  Ground Station backend  ──►  UI
+OpenCode     │   local Rust daemon   ingest · ClickHouse · query
 Custom / SDK ┘        │
-                      └──►  any OTLP backend
+                      └──────────►  any OTLP backend
 ```
 
 - **Adapters** attach to an agent runtime through its own hook system, or wrap the process when there is none. No code changes to the agent.
-- **`gsd`**, the local Rust daemon, handles ingestion, buffering, batching, compression, retry, sampling, redaction, secret filtering, local persistence, schema normalization and authentication. Redaction happens here, before anything leaves the machine. A local-only mode keeps every byte on the developer's machine.
-- **Backend** ingests and stores high-cardinality event telemetry (ClickHouse) and serves the query API.
-- **UI** is the trajectory viewer, fleet view, detections and analytics.
-- **OpenTelemetry**: Ground Station does not replace OTel, it adds agent semantics. A trajectory is a trace, model and tool invocations are spans, events are span events, measurements are metrics. `gen_ai.*` attributes where a convention exists, `gs.*` for agent-specific fields. OTLP in and out.
+- **`gsd`**, the local daemon, does ingestion, buffering, batching, compression, retry, sampling, redaction, secret filtering, local persistence, schema normalization and auth. It's a single static Rust binary.
+- **Redaction happens on your machine**, before anything is uploaded. Secrets are filtered, paths hashed, prompts and tool output excluded by policy. A local-only mode keeps every byte at home.
+- **OpenTelemetry-native.** Ground Station doesn't replace OTel, it adds agent semantics. A trajectory is a trace; model and tool invocations are spans; events are span events; measurements are metrics. `gen_ai.*` where a convention exists, `gs.*` for the rest. OTLP in and out.
 
-## Repository layout
+<br>
 
-This is a monorepo: a Cargo workspace for everything in Rust, plus (later) the UI. Backend, daemon, CLI and UI share one telemetry schema, so they change together. SDKs for other languages will live in their own repositories once they exist.
-
-```text
-groundstationd/
-├── Cargo.toml                  workspace (edition 2024, rust 1.88, resolver 3)
-├── crates/
-│   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
-│   ├── gsd/                    local daemon (axum HTTP ingest, buffering, compression, redaction)
-│   └── groundstation/          the `groundstation` CLI (login, connect, status)
-├── product.md                  product brief
-└── README.md
-```
-
-Planned additions, in order: `crates/gs-ingest` and `crates/gs-query` (backend over ClickHouse), `ui/` (trajectory viewer), `adapters/claude-code/` (first integration), `docs/`.
-
-### Build
-
-```sh
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace          # `clippy::all` is warn, `unsafe_code` is forbidden
-```
-
-## Planned developer experience
+## What using it will look like
 
 ```sh
 curl -fsSL https://groundstation.sh/install | sh
 groundstation login
 groundstation connect claude-code
-claude                         # run the agent as usual; the trajectory appears
+claude          # run your agent as usual. the trajectory shows up.
 ```
 
-Configuration lives in `~/.config/groundstation/config.toml`:
+Policy lives in one file, enforced by the daemon:
 
 ```toml
+# ~/.config/groundstation/config.toml
 [redaction]
-secrets  = true                 # stripe, aws, github, openai, jwt, pem …
+secrets  = true                  # stripe, aws, github, openai, jwt, pem …
 paths    = "hash"
 env      = ["*_KEY", "*_TOKEN", "*_SECRET", "DATABASE_URL"]
 exclude  = ["prompt", "tool.output.body"]
 
 [transport]
-mode     = "local-only"         # or "cloud"
+mode     = "local-only"          # or "cloud"
 ```
 
-## Identifiers
+<br>
+
+## Repository layout
+
+One repo, one Cargo workspace. The daemon, CLI, backend and UI share a single telemetry schema, so they change together. Language SDKs will get their own repositories once they exist.
+
+```text
+groundstation/
+├── Cargo.toml                  workspace · edition 2024 · rust 1.88 · resolver 3
+├── crates/
+│   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
+│   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction)
+│   └── groundstation/          the `groundstation` CLI (login, connect, status)
+├── assets/                     logo, banner, screenshots
+├── product.md                  the product brief
+└── README.md
+```
+
+Coming next, in this order: backend crates over ClickHouse, the `ui/` trajectory viewer, `adapters/claude-code/`, and `docs/`.
+
+```sh
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace        # clippy::all warns; unsafe_code is forbidden
+```
+
+<br>
+
+## Names, so nobody has to guess
 
 | | |
-|---|---|
-| Product | Ground Station |
-| Category | Agent Platform Monitoring (APM) |
+|:--|:--|
+| Product | **Ground Station** |
+| Category | Agent Platform Monitoring (APM). Yes, the collision with the old APM is on purpose. |
 | CLI | `groundstation` |
-| Daemon | `gsd` |
+| Daemon | `gsd` (not `gs`, which is Ghostscript on most machines) |
 | Config | `~/.config/groundstation/config.toml` |
 | Schema | `groundstation.telemetry.v0` |
-| Default listen address | `127.0.0.1:4318` |
+| Listens on | `127.0.0.1:4318`, OTLP-compatible |
 
-## Beta thesis
+<br>
 
-Do not try to support every agent. Instrument one coding agent so well that debugging it without Ground Station feels primitive. The success metric is the share of agent failures and performance problems that get investigated through Ground Station.
+## The beta thesis
+
+Don't try to support every agent. Instrument **one** coding agent so well that debugging it without Ground Station feels primitive. The metric that matters: the share of agent failures and slowdowns that get investigated here first.
+
+<br>
 
 ## Contributing
 
-Not open for contributions yet. Watch the repository for the first `gsd` release.
+Not open for contributions yet, but soon. Star or watch the repo to hear about the first `gsd` release.
 
 ## License
 
-Apache-2.0. Declared at the workspace level; a `LICENSE` file will be added with the first release.
+Apache-2.0, declared at the workspace level. A `LICENSE` file lands with the first release.
+
+<p align="center"><sub>Every agent leaves a trajectory. Make it observable.</sub></p>
