@@ -29,6 +29,7 @@ claude                              # use your agents as usual
 
 groundstation trajectories          # recent runs
 groundstation show <id-prefix>      # one run as a timeline
+groundstation resync claude-code    # re-read its transcripts, e.g. after upgrading
 ```
 
 ```text
@@ -82,6 +83,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 |---|---|
 | `POST /v1/events` | A `groundstation.telemetry.v0` batch, for SDKs and custom agents |
 | `POST /v1/adapters/{name}` | An agent's hook payload wrapped in a `HookEnvelope`, translated by that adapter (`claude-code`, `codex`, `opencode`, `pi`) |
+| `POST /v1/adapters/{name}/resync` | Re-read that adapter's transcripts from the start, so stored trajectories pick up what this version derives from them |
 | `GET /v1/trajectories?limit=N` | Trajectory summaries, most recent first |
 | `GET /v1/trajectories/{id}` | One trajectory and its events (unique id prefixes work) |
 | `GET /v1/health` | Status, counters and transport mode |

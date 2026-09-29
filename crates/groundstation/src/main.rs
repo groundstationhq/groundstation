@@ -77,6 +77,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Re-read an agent's transcripts from the start, so trajectories already
+    /// stored pick up what this version derives from them (e.g. model call durations).
+    Resync { agent: AgentName },
     /// Print config and data locations and the effective configuration.
     Config,
 }
@@ -317,6 +320,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }),
+        Command::Resync { agent } => block_on(resync(&config, agent)),
         Command::Config => {
             let mut shown = config.clone();
             // Fail here, not at daemon start, on a bad exclude or env glob.
@@ -578,6 +582,39 @@ async fn stop_daemon(config: &Config) -> Result<ExitCode> {
         }
     }
     bail!("gsd did not stop within 5s")
+}
+
+async fn resync(config: &Config, agent: AgentName) -> Result<ExitCode> {
+    let adapter = agent.adapter();
+    let r = Client::new(config)?.resync(adapter).await?;
+    if r.transcripts == 0 && r.failed.is_empty() && r.unmatched.is_empty() {
+        println!("No {adapter} transcripts to re-read.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "Re-read {} {adapter} transcript{}; {} event{} updated.",
+        r.transcripts,
+        if r.transcripts == 1 { "" } else { "s" },
+        r.events,
+        if r.events == 1 { "" } else { "s" },
+    );
+    for f in &r.failed {
+        println!("  ⚠ {}: {}", render::tilde(&f.path), f.error);
+    }
+    if !r.unmatched.is_empty() {
+        println!(
+            "  {} skipped: no stored hook links them to a trajectory",
+            r.unmatched.len()
+        );
+        for path in &r.unmatched {
+            println!("    {}", render::tilde(path));
+        }
+    }
+    Ok(if r.failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 async fn status(config: &Config) -> Result<ExitCode> {

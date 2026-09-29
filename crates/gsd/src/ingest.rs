@@ -14,7 +14,7 @@ use groundstation_adapter_opencode::OpenCode;
 use groundstation_adapter_pi::Pi;
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
-use crate::api::SpoolItem;
+use crate::api::{ResyncFailure, ResyncResponse, SpoolItem};
 use crate::privacy::Privacy;
 use crate::store::{NewEvent, Store};
 
@@ -146,7 +146,9 @@ impl Ingestor {
         };
         let mut stored = 0;
         for path in &f.transcripts {
-            stored += self.sync_transcript_coalesced(registered, &f.trajectory, path);
+            stored += self
+                .sync_transcript_coalesced(registered, &f.trajectory, path, false)
+                .unwrap_or(0);
         }
         for (id, cwd) in &f.cwds {
             self.enrich_repository(id, cwd);
@@ -161,36 +163,112 @@ impl Ingestor {
         }
     }
 
+    /// Re-reads every transcript of `adapter` from the start, so events
+    /// already stored pick up what this version of the adapter derives from
+    /// them. Model calls are updated in place; other events are write-once.
+    pub fn resync(&self, adapter: &str) -> Result<ResyncResponse> {
+        let Some(registered) = self.adapter(adapter) else {
+            bail!("unknown adapter {adapter:?}");
+        };
+        // Transcripts read before their owner was recorded are matched to the
+        // hooks that named them.
+        let owners: HashMap<String, (String, String)> = self
+            .store
+            .transcript_owners()?
+            .into_iter()
+            .filter_map(|o| {
+                let path = Path::new(&o.path).canonicalize().ok()?;
+                Some((
+                    path.to_string_lossy().into_owned(),
+                    (o.adapter?, o.trajectory_id?),
+                ))
+            })
+            .collect();
+        let mut out = ResyncResponse::default();
+        for t in self.store.transcripts()? {
+            let owner = match (t.adapter, t.trajectory_id) {
+                (Some(a), Some(id)) => Some((a, id)),
+                _ => owners.get(&t.path).cloned(),
+            };
+            let Some((owner, trajectory)) = owner else {
+                if registered
+                    .roots
+                    .iter()
+                    .any(|r| Path::new(&t.path).starts_with(r))
+                {
+                    out.unmatched.push(t.path);
+                }
+                continue;
+            };
+            if owner != adapter {
+                continue;
+            }
+            match self.sync_transcript_coalesced(registered, &trajectory, &t.path, true) {
+                Ok(n) => {
+                    out.transcripts += 1;
+                    out.events += n;
+                }
+                Err(e) => out.failed.push(ResyncFailure {
+                    path: t.path,
+                    error: format!("{e:#}"),
+                }),
+            }
+        }
+        Ok(out)
+    }
+
     /// Reads a transcript unless another thread already is, in which case
     /// that thread reads again when it finishes, so no appended line is missed.
+    /// `from_start` reads it again from the first line instead, waiting for
+    /// any read in progress so the two don't race on the cursor.
     fn sync_transcript_coalesced(
         &self,
         registered: &Registered,
         trajectory: &str,
         path: &str,
-    ) -> usize {
+        mut from_start: bool,
+    ) -> Result<usize> {
         let lock = || self.syncing.lock().unwrap_or_else(|e| e.into_inner());
-        {
-            let mut syncing = lock();
-            if let Some(again) = syncing.get_mut(path) {
-                *again = true;
-                return 0;
-            }
-            syncing.insert(path.to_string(), false);
-        }
-        let mut stored = 0;
         loop {
-            match self.sync_transcript(registered, trajectory, Path::new(path)) {
-                Ok(n) => stored += n,
-                Err(e) => tracing::debug!(%path, "transcript not read: {e:#}"),
+            let mut syncing = lock();
+            match syncing.get_mut(path) {
+                None => {
+                    syncing.insert(path.to_string(), false);
+                    break;
+                }
+                Some(again) if !from_start => {
+                    *again = true;
+                    return Ok(0);
+                }
+                Some(_) => {
+                    drop(syncing);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
             }
+        }
+        let mut result = Ok(0);
+        loop {
+            match self.sync_transcript(registered, trajectory, Path::new(path), from_start) {
+                Ok(n) => {
+                    if let Ok(stored) = &mut result {
+                        *stored += n;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(%path, "transcript not read: {e:#}");
+                    if result.is_ok() {
+                        result = Err(e);
+                    }
+                }
+            }
+            from_start = false;
             let mut syncing = lock();
             if syncing.get(path) == Some(&true) {
                 syncing.insert(path.to_string(), false);
                 continue;
             }
             syncing.remove(path);
-            return stored;
+            return result;
         }
     }
 
@@ -210,12 +288,14 @@ impl Ingestor {
         self.store.insert(events)
     }
 
-    /// Reads lines appended to a transcript since the last sync.
+    /// Reads lines appended to a transcript since the last sync, or every
+    /// line when `from_start`.
     fn sync_transcript(
         &self,
         registered: &Registered,
         trajectory: &str,
         path: &Path,
+        from_start: bool,
     ) -> Result<usize> {
         let path = path
             .canonicalize()
@@ -232,8 +312,8 @@ impl Ingestor {
         let mut file = std::fs::File::open(&path)?;
         let len = file.metadata()?.len();
         let (mut offset, mut state) = self.store.transcript_cursor(&key)?;
-        if len < offset {
-            // Truncated or replaced: start over.
+        if from_start || len < offset {
+            // Asked to, or truncated or replaced: start over.
             offset = 0;
             state = serde_json::Value::Null;
         }
@@ -256,8 +336,13 @@ impl Ingestor {
             })
             .collect();
         let stored = self.store_events(events, None)?;
-        self.store
-            .set_transcript_cursor(&key, offset + end as u64 + 1, &state)?;
+        self.store.set_transcript_cursor(
+            &key,
+            offset + end as u64 + 1,
+            &state,
+            registered.adapter.name(),
+            trajectory,
+        )?;
         Ok(stored)
     }
 
@@ -326,7 +411,7 @@ mod tests {
     }
 
     fn sync(ing: &Ingestor, path: &Path) -> Result<usize> {
-        ing.sync_transcript(ing.adapter("claude-code").unwrap(), "s", path)
+        ing.sync_transcript(ing.adapter("claude-code").unwrap(), "s", path, false)
     }
 
     fn assistant_line(id: &str, out: u64) -> String {
@@ -358,6 +443,81 @@ mod tests {
         let (summary, _) = ing.store.trajectory("s").unwrap().unwrap();
         assert_eq!(summary.model_calls, 2);
         assert_eq!(summary.output_tokens, 15);
+    }
+
+    #[test]
+    fn resync_backfills_transcripts_read_by_an_older_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let ing = ingestor().with_transcript_root(dir.path());
+        let path = dir.path().join("s1.jsonl");
+        let assistant = json!({
+            "type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-09-28T14:00:02Z",
+            "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 100}}
+        })
+        .to_string();
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{assistant}\n",
+                json!({"type": "user", "uuid": "u1", "timestamp": "2026-09-28T14:00:00Z"})
+            ),
+        )
+        .unwrap();
+        let start = HookEnvelope {
+            id: Uuid::now_v7(),
+            observed_at: Utc::now(),
+            payload: json!({
+                "session_id": "s1", "hook_event_name": "SessionStart", "source": "startup",
+                "transcript_path": path.to_str().unwrap(),
+            }),
+        };
+        ing.ingest_hook_now("claude-code", start).unwrap();
+        let duration = |ing: &Ingestor| {
+            let (_, events) = ing.store.trajectory("s1").unwrap().unwrap();
+            let model = events
+                .iter()
+                .find(|e| e.kind == groundstation_schema::EventKind::ModelCompleted)
+                .unwrap();
+            model.get(attr::DURATION_MS).cloned()
+        };
+        assert_eq!(duration(&ing), Some(json!(2000)));
+
+        // What an older adapter stored: the same event without a duration,
+        // from a transcript whose owner wasn't recorded.
+        let old = ClaudeCode
+            .parse_transcript_line("s1", &assistant, &mut serde_json::Value::Null)
+            .unwrap();
+        ing.store
+            .insert(vec![NewEvent {
+                event: old,
+                raw: None,
+                host: None,
+            }])
+            .unwrap();
+        ing.store.forget_transcript_owners();
+        assert_eq!(duration(&ing), None);
+        // A transcript no stored hook names.
+        let orphan = dir.path().join("orphan.jsonl");
+        std::fs::write(&orphan, format!("{assistant}\n")).unwrap();
+        sync(&ing, &orphan).unwrap();
+        ing.store.forget_transcript_owners();
+
+        assert_eq!(ing.resync("codex").unwrap().transcripts, 0);
+        let r = ing.resync("claude-code").unwrap();
+        assert_eq!((r.transcripts, r.events), (1, 1));
+        assert!(r.failed.is_empty());
+        assert_eq!(r.unmatched.len(), 1);
+        assert!(r.unmatched[0].ends_with("orphan.jsonl"));
+        assert_eq!(duration(&ing), Some(json!(2000)));
+
+        // The owner is recorded now, so the next resync needs no hook lookup.
+        let owned = ing.store.transcripts().unwrap();
+        let t = owned.iter().find(|t| t.path.ends_with("s1.jsonl")).unwrap();
+        assert_eq!(
+            (t.adapter.as_deref(), t.trajectory_id.as_deref()),
+            (Some("claude-code"), Some("s1"))
+        );
+        assert_eq!(ing.resync("claude-code").unwrap().events, 0);
     }
 
     #[test]

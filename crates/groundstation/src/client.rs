@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use gsd::api::{ErrorBody, Health, IngestResponse, TrajectoryDetail, TrajectorySummary};
+use gsd::api::{
+    ErrorBody, Health, IngestResponse, ResyncResponse, TrajectoryDetail, TrajectorySummary,
+};
 use gsd::config::Config;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -46,6 +48,22 @@ impl Client {
 
     pub async fn trajectory(&self, id: &str) -> Result<TrajectoryDetail> {
         self.get(&format!("/v1/trajectories/{}", encode(id))).await
+    }
+
+    /// Re-reads an adapter's transcripts. Can take minutes on a long history.
+    pub async fn resync(&self, adapter: &str) -> Result<ResyncResponse> {
+        let resp = self
+            .http
+            .post(format!(
+                "{}/v1/adapters/{}/resync",
+                self.base,
+                encode(adapter)
+            ))
+            .timeout(Duration::from_secs(30 * 60))
+            .json(&serde_json::json!({}))
+            .send()
+            .await;
+        decode(resp.with_context(|| self.unreachable())?).await
     }
 
     pub async fn post<B: Serialize>(&self, path: &str, body: &B) -> Result<IngestResponse> {

@@ -60,10 +60,20 @@ CREATE TABLE transcripts (
 "#,
     // Adapter parse state carried between transcript reads (e.g. Codex's current model).
     "ALTER TABLE transcripts ADD COLUMN state TEXT;",
+    // Who a transcript belongs to, so it can be re-read without waiting for a hook.
+    "ALTER TABLE transcripts ADD COLUMN adapter TEXT;
+     ALTER TABLE transcripts ADD COLUMN trajectory_id TEXT;",
 ];
 
 pub struct Store {
     conn: Mutex<Connection>,
+}
+
+/// A transcript file and, when known, who it belongs to.
+pub struct Transcript {
+    pub path: String,
+    pub adapter: Option<String>,
+    pub trajectory_id: Option<String>,
 }
 
 /// An event plus the agent payload it was derived from, if retained.
@@ -219,14 +229,70 @@ impl Store {
         Ok((offset.max(0) as u64, state))
     }
 
-    pub fn set_transcript_cursor(&self, path: &str, offset: u64, state: &Value) -> Result<()> {
+    pub fn set_transcript_cursor(
+        &self,
+        path: &str,
+        offset: u64,
+        state: &Value,
+        adapter: &str,
+        trajectory_id: &str,
+    ) -> Result<()> {
         let state = (!state.is_null()).then(|| state.to_string());
         self.conn().execute(
-            "INSERT INTO transcripts (path, offset, state) VALUES (?1, ?2, ?3)
-             ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, state = excluded.state",
-            params![path, offset as i64, state],
+            "INSERT INTO transcripts (path, offset, state, adapter, trajectory_id) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, state = excluded.state,
+                 adapter = excluded.adapter, trajectory_id = excluded.trajectory_id",
+            params![path, offset as i64, state, adapter, trajectory_id],
         )?;
         Ok(())
+    }
+
+    /// Makes every transcript look as if read before owners were recorded.
+    #[cfg(test)]
+    pub fn forget_transcript_owners(&self) {
+        self.conn()
+            .execute(
+                "UPDATE transcripts SET adapter = NULL, trajectory_id = NULL",
+                [],
+            )
+            .unwrap();
+    }
+
+    /// Every transcript read so far, with its adapter and trajectory when known.
+    pub fn transcripts(&self) -> Result<Vec<Transcript>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT path, adapter, trajectory_id FROM transcripts ORDER BY path")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Transcript {
+                path: r.get(0)?,
+                adapter: r.get(1)?,
+                trajectory_id: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Transcript paths named by stored hooks, with the adapter and trajectory
+    /// of the hook. Recovers owners of transcripts read before they were
+    /// recorded; needs the path attribute or the raw payload to be kept.
+    pub fn transcript_owners(&self) -> Result<Vec<Transcript>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT path, agent, trajectory_id FROM (
+                 SELECT json_extract(attributes, '$.\"gs.transcript.path\"') AS path, agent, trajectory_id FROM events
+                 UNION ALL SELECT json_extract(raw, '$.transcript_path'), agent, trajectory_id FROM events WHERE raw IS NOT NULL
+                 UNION ALL SELECT json_extract(raw, '$.agent_transcript_path'), agent, trajectory_id FROM events WHERE raw IS NOT NULL
+             ) WHERE path IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Transcript {
+                path: r.get(0)?,
+                adapter: r.get(1)?,
+                trajectory_id: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn list_trajectories(&self, limit: usize) -> Result<Vec<TrajectorySummary>> {

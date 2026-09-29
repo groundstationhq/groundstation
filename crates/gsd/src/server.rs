@@ -19,8 +19,8 @@ use serde::Deserialize;
 use tokio::sync::watch;
 
 use crate::api::{
-    ErrorBody, Health, HookEnvelope, IngestResponse, TrajectoryDetail, TrajectorySummary,
-    UploadStatus,
+    ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, TrajectoryDetail,
+    TrajectorySummary, UploadStatus,
 };
 use crate::config::Config;
 use crate::ingest::Ingestor;
@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/events", post(ingest_events))
         .route("/v1/adapters/{name}", post(ingest_hook))
+        .route("/v1/adapters/{name}/resync", post(resync))
         .route("/v1/trajectories", get(list_trajectories))
         .route("/v1/trajectories/{id}", get(get_trajectory))
         .route("/v1/shutdown", post(shutdown))
@@ -127,6 +128,24 @@ async fn ingest_hook(
     let ingestor = s.ingestor.clone();
     tokio::task::spawn_blocking(move || ingestor.follow_up(follow_up));
     Ok(Json(IngestResponse { stored }))
+}
+
+async fn resync(
+    State(s): State<AppState>,
+    Path(name): Path<String>,
+    Json(_): Json<serde_json::Value>,
+) -> Result<Json<ResyncResponse>, ApiError> {
+    if !s.ingestor.has_adapter(&name) {
+        return Err(error(
+            StatusCode::NOT_FOUND,
+            format!(
+                "unknown adapter {name:?}; this gsd supports: {}",
+                s.ingestor.adapter_names().join(", ")
+            ),
+        ));
+    }
+    let ingestor = s.ingestor.clone();
+    Ok(Json(blocking(move || ingestor.resync(&name)).await?))
 }
 
 #[derive(Deserialize)]
@@ -246,6 +265,34 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn resync_by_adapter() {
+        let app = app();
+        let host = "127.0.0.1:4318";
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/v1/adapters/claude-code/resync",
+            host,
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let typed: ResyncResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(typed.transcripts, 0);
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/v1/adapters/nope/resync",
+            host,
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("claude-code"));
     }
 
     #[tokio::test]

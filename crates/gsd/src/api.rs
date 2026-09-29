@@ -24,6 +24,26 @@ pub struct IngestResponse {
     pub stored: usize,
 }
 
+/// Result of re-reading an adapter's transcripts (`POST /v1/adapters/{name}/resync`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResyncResponse {
+    /// Transcripts read again from the start.
+    pub transcripts: usize,
+    /// Events that were new or changed.
+    pub events: usize,
+    /// Transcripts that could not be read, e.g. deleted since.
+    pub failed: Vec<ResyncFailure>,
+    /// Transcripts under the adapter's directories that no stored hook links
+    /// to a trajectory, so they were skipped.
+    pub unmatched: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResyncFailure {
+    pub path: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
