@@ -1,0 +1,104 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` (matching the workspace version) to build both binaries
+# for every supported target and publish a GitHub Release with checksums.
+# install.sh resolves "latest" through the VERSION asset, so no API calls are needed.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} -p groundstation -p gsd
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p groundstation -p gsd
+          fi
+      - name: Package
+        id: pkg
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          ws=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$version" != "$ws" ]; then echo "tag $tag does not match workspace version $ws" >&2; exit 1; fi
+          name="groundstation-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/groundstation" "target/${{ matrix.target }}/release/gsd" LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums and version marker
+        run: |
+          set -eu
+          cd assets
+          tag="${{ inputs.tag || github.ref_name }}"
+          printf '%s\n' "${tag#v}" > VERSION
+          sha256sum *.tar.gz > SHA256SUMS
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            assets/*.tar.gz
+            assets/SHA256SUMS
+            assets/VERSION
+          generate_release_notes: true

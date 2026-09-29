@@ -108,14 +108,30 @@ Custom / SDK ┘        │
 
 <br>
 
-## What using it will look like
+## Install
 
 ```sh
 curl -fsSL https://groundstation.sh/install | sh
-groundstation login
-groundstation connect claude-code
-claude          # run your agent as usual. the trajectory shows up.
+groundstation connect claude-code       # or: codex
+claude                                  # run your agent as usual; the trajectory shows up
+groundstation trajectories
 ```
+
+The installer ([`install.sh`](./install.sh)) is POSIX `sh`, never needs root, and only touches your home directory. It detects the platform (macOS arm64/x86_64, Linux x86_64/arm64 as static musl binaries), downloads the matching archive from the GitHub Release, verifies it against `SHA256SUMS`, unpacks it under `~/.local/share/groundstation/releases/`, and links `groundstation` and `gsd` into `~/.local/bin`. Re-running it upgrades or repairs. Knobs: `GROUNDSTATION_VERSION`, `GROUNDSTATION_INSTALL_DIR`, `GROUNDSTATION_HOME`, `GROUNDSTATION_NON_INTERACTIVE`.
+
+Until the repository is public, release downloads need a GitHub token, so build from source instead:
+
+```sh
+cargo install --path crates/groundstation --path crates/gsd
+```
+
+## Releasing
+
+1. Bump `version` in the workspace `Cargo.toml` and commit.
+2. Tag it: `git tag v0.1.0 && git push origin v0.1.0`.
+3. The [release workflow](./.github/workflows/release.yml) builds both binaries for all four targets, publishes a GitHub Release with one `.tar.gz` per target, `SHA256SUMS`, and a `VERSION` marker that `install.sh` uses to resolve "latest" without touching the API.
+
+The tag must match the workspace version or the build fails on purpose.
 
 Policy lives in one file, enforced by the daemon:
 
