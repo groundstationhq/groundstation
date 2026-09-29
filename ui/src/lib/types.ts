@@ -100,10 +100,10 @@ export interface Health {
   trajectories: number;
   events: number;
   spool_pending: number;
-  upload: { endpoint: string | null; pending: number };
+  upload: { mode: string; endpoint: string | null; pending: number };
 }
 
-export type TrajectoryStatus = "running" | "completed" | "failed" | "cancelled" | (string & {});
+export type TrajectoryStatus = "running" | "idle" | "completed" | "failed" | "cancelled" | (string & {});
 
 export interface TrajectorySummary {
   id: string;

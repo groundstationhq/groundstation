@@ -34,12 +34,13 @@ function Minimap({ rows, total, running }: { rows: Row[]; total: number; running
 
 function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
   const b = useMemo(() => breakdown(rows), [rows]);
+  const modelKnown = rows.some((r) => r.kind === "model" && r.durationMs != null);
   const other = Math.max(0, total - b.tool - b.model - b.sub);
   const parts = [
     { k: "tools", v: b.tool, c: "var(--color-tool)" },
     { k: "model", v: b.model, c: "var(--color-model)" },
     { k: "subagents", v: b.sub, c: "var(--color-agent)" },
-    { k: "idle / other", v: other, c: "var(--color-bg-4)" },
+    { k: modelKnown ? "idle / other" : "unattributed", v: other, c: "var(--color-bg-4)" },
   ].filter((p) => p.v > 0);
   return (
     <div className="grid gap-4 border-b border-line px-4 py-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -53,6 +54,7 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
             <li key={p.k} className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-1.5 rounded-[1px]" style={{ background: p.c }} aria-hidden />{p.k} <span className="text-fg-2">{Math.round((p.v / total) * 100)}%</span></li>
           ))}
         </ul>
+        {!modelKnown && <p className="mono mt-1.5 text-[10.5px] text-fg-4">This adapter reports model calls without latency, so model time is included in unattributed.</p>}
       </div>
       <div>
         <div className="label text-[10px]">Longest tool calls</div>
@@ -142,6 +144,8 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
 
 const STATUS: Record<string, { dot: "running" | "ok" | "err" | "idle"; label: string; cls: string }> = {
   running: { dot: "running", label: "Running", cls: "text-model" },
+  idle: { dot: "idle", label: "Idle", cls: "text-fg-3" },
+  waiting: { dot: "idle", label: "Waiting", cls: "text-fg-3" },
   completed: { dot: "ok", label: "Complete", cls: "text-fg-2" },
   failed: { dot: "err", label: "Failed", cls: "text-err" },
   cancelled: { dot: "idle", label: "Cancelled", cls: "text-fg-3" },

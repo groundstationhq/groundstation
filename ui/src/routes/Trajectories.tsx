@@ -15,6 +15,8 @@ function ago(iso: string): string {
 
 const STATUS: Record<string, { dot: "running" | "ok" | "err" | "warn" | "idle"; label: string; cls: string }> = {
   running: { dot: "running", label: "Running", cls: "text-model" },
+  idle: { dot: "idle", label: "Idle", cls: "text-fg-3" },
+  waiting: { dot: "idle", label: "Waiting", cls: "text-fg-3" },
   completed: { dot: "ok", label: "Complete", cls: "text-fg-2" },
   failed: { dot: "err", label: "Failed", cls: "text-err" },
   cancelled: { dot: "idle", label: "Cancelled", cls: "text-fg-3" },
@@ -40,10 +42,10 @@ function median(xs: number[]): number {
 }
 
 function Overview({ rows }: { rows: TrajectorySummary[] }) {
-  const done = rows.filter((r) => r.status !== "running");
+  const done = rows.filter((r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled");
   const ok = done.filter((r) => r.status === "completed").length;
   const cells: Array<[string, string, string?]> = [
-    ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running`],
+    ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running · ${rows.filter((r) => r.status === "idle" || r.status === "waiting").length} idle`],
     ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
     ["Median runtime", fmtDur(median(done.map((r) => r.duration_ms))), ""],
     ["Tokens", fmtTokens(rows.reduce((a, r) => a + totalTokens(r), 0)), ""],
@@ -110,15 +112,15 @@ export function Trajectories() {
                       </a>
                       <div className="mono mt-0.5 text-[10.5px] text-fg-4">{r.id}</div>
                     </td>
-                    <td className={cx("px-3 py-2.5 text-[12.5px] text-fg-2", COLS[1][1])}>
+                    <td className={cx("whitespace-nowrap px-3 py-2.5 text-[12.5px] text-fg-2", COLS[1][1])}>
                       <div className="flex items-center gap-1.5"><Glyph kind="agent" size={7} />{r.agent}</div>
                       <div className="mono text-[10.5px] text-fg-4">{r.agent_version ?? ""}</div>
                     </td>
                     <td className={cx("mono px-3 py-2.5 text-[12px] text-fg-2", COLS[2][1])}>
-                      {r.repository ?? r.cwd?.split("/").slice(-1)[0] ?? "—"}
+                      {r.repository ?? (r.cwd ? r.cwd.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, "~") : "—")}
                       {r.branch && <div className="text-[10.5px] text-fg-4">{r.branch}</div>}
                     </td>
-                    <td className={cx("mono px-3 py-2.5 text-[12px] text-fg-3", COLS[3][1])}>{ago(r.started_at)}</td>
+                    <td className={cx("mono whitespace-nowrap px-3 py-2.5 text-[12px] text-fg-3", COLS[3][1])}>{ago(r.started_at)}</td>
                     <td className={cx("mono px-3 py-2.5 text-right text-[12.5px]", r.status === "running" ? "text-model" : "text-fg")}>{fmtDur(r.duration_ms)}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[5][1])}>{r.user_turns}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[6][1])}>
