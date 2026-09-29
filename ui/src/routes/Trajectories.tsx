@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { Glyph, StatusDot } from "@/components/ui/primitives";
+import { SortToggle, type Order } from "@/components/ui/SortToggle";
 import { Empty } from "@/components/Shell";
 import { trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
@@ -85,17 +87,21 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
 
 export function Trajectories() {
   const st = useAsync((s) => trajectories(100, s), [], 5_000);
+  const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error") return <Empty title="Couldn't load trajectories" body={st.error} />;
-  const rows = st.data.data;
+  const rows = [...st.data.data].sort((a, b) => (order === "newest" ? b.started_at.localeCompare(a.started_at) : a.started_at.localeCompare(b.started_at)));
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight text-fg">Trajectories</h1>
-          <p className="mt-0.5 text-[12.5px] text-fg-3">Every agent run this daemon has seen, newest first.</p>
+          <p className="mt-0.5 text-[12.5px] text-fg-3">Every agent run this daemon has seen, {order} first.</p>
         </div>
-        <div className="mono whitespace-nowrap text-[11px] text-fg-4">{st.data.source === "demo" ? "demo data" : "local · updates every 5s"}</div>
+        <div className="flex items-center gap-3">
+          <div className="mono hidden whitespace-nowrap text-[11px] text-fg-4 sm:block">{st.data.source === "demo" ? "demo data" : "local · updates every 5s"}</div>
+          <SortToggle order={order} onChange={setOrder} />
+        </div>
       </div>
       <Overview rows={rows} />
       {rows.length === 0 ? (
