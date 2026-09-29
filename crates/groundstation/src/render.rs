@@ -12,8 +12,19 @@ pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>7}  TASK",
-        "ID", "AGENT", "STATUS", "STARTED", "DURATION", "TURNS", "TOOLS", "MODEL", "TOKENS"
+        "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  TASK",
+        "ID",
+        "AGENT",
+        "STATUS",
+        "STARTED",
+        "DURATION",
+        "TURNS",
+        "TOOLS",
+        "MODEL",
+        "IN",
+        "CACHE-W",
+        "CACHE-R",
+        "OUT"
     );
     for t in rows {
         let tools = if t.tool_errors > 0 {
@@ -29,7 +40,7 @@ pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
         };
         let _ = writeln!(
             out,
-            "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>7}  {}",
+            "{:<8}  {:<11}  {:<9}  {:<11}  {:>8}  {:>5}  {:>9}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}  {}",
             short_id(&t.id),
             truncate(&t.agent, 11),
             t.status,
@@ -38,7 +49,10 @@ pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
             t.user_turns,
             tools,
             t.model_calls,
-            tokens(t.total_tokens()),
+            tokens(t.input_tokens),
+            tokens(t.cache_creation_tokens),
+            tokens(t.cache_read_tokens),
+            tokens(t.output_tokens),
             truncate(&task, 60),
         );
     }
@@ -88,11 +102,10 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
     if t.total_tokens() > 0 {
         let _ = writeln!(
             out,
-            "tokens {}   input {} · cache read {} · cache write {} · output {}",
-            tokens(t.total_tokens()),
+            "tokens   in {} · cache write {} · cache read {} · out {}",
             tokens(t.input_tokens),
-            tokens(t.cache_read_tokens),
             tokens(t.cache_creation_tokens),
+            tokens(t.cache_read_tokens),
             tokens(t.output_tokens),
         );
     }
@@ -135,9 +148,6 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
             }
             EventKind::ModelCompleted => {
                 let n = |k| ev.get(k).and_then(Value::as_u64).unwrap_or(0);
-                let input = n(attr::GEN_AI_INPUT_TOKENS)
-                    + n(attr::CACHE_READ_TOKENS)
-                    + n(attr::CACHE_CREATION_TOKENS);
                 let model = ev
                     .get(attr::GEN_AI_RESPONSE_MODEL)
                     .and_then(Value::as_str)
@@ -148,11 +158,12 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
                     ""
                 };
                 Some(format!(
-                    "◆ {:<12} {} → {}  {}{side}",
+                    "◆ {:<12} in {:>6}  cache-w {:>6}  cache-r {:>6}  out {:>6}  {model}{side}",
                     "model",
-                    tokens(input),
+                    tokens(n(attr::GEN_AI_INPUT_TOKENS)),
+                    tokens(n(attr::CACHE_CREATION_TOKENS)),
+                    tokens(n(attr::CACHE_READ_TOKENS)),
                     tokens(n(attr::GEN_AI_OUTPUT_TOKENS)),
-                    model
                 ))
             }
             EventKind::TurnCompleted => Some("■ turn done".to_string()),
