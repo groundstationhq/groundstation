@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tokio::sync::watch;
 
 use crate::api::{
-    ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, TrajectoryDetail,
+    ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, ToolStats, TrajectoryDetail,
     TrajectorySummary, UploadStatus,
 };
 use crate::config::Config;
@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/adapters/{name}/resync", post(resync))
         .route("/v1/trajectories", get(list_trajectories))
         .route("/v1/trajectories/{id}", get(get_trajectory))
+        .route("/v1/stats/tools", get(tool_stats))
         .route("/v1/shutdown", post(shutdown))
         .fallback(crate::ui::serve)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
@@ -189,6 +190,23 @@ async fn get_trajectory(
     }
 }
 
+#[derive(Deserialize)]
+struct StatsParams {
+    days: Option<u32>,
+}
+
+async fn tool_stats(
+    State(s): State<AppState>,
+    Query(params): Query<StatsParams>,
+) -> Result<Json<ToolStats>, ApiError> {
+    let days = params.days.unwrap_or(14).clamp(1, 365);
+    let since = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
+    let since_ns = since.timestamp_nanos_opt().unwrap_or(0);
+    let store = s.ingestor.store.clone();
+    let tools = blocking(move || store.tool_latency(since_ns)).await?;
+    Ok(Json(ToolStats { days, since, tools }))
+}
+
 async fn shutdown(State(s): State<AppState>, Json(_): Json<serde_json::Value>) -> StatusCode {
     let _ = s.shutdown.send(true);
     StatusCode::ACCEPTED
@@ -226,6 +244,7 @@ mod tests {
     use crate::store::Store;
     use axum::body::Body;
     use chrono::Utc;
+    use groundstation_schema::{Agent, Event, EventKind, attr};
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use tower::ServiceExt;
@@ -336,6 +355,51 @@ mod tests {
             body["error"].as_str().unwrap().contains("claude-code"),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn tool_stats_window() {
+        let app = app();
+        let host = "127.0.0.1:4318";
+        let mut started = Event::new(
+            Uuid::now_v7(),
+            "t",
+            EventKind::ToolStarted,
+            Utc::now(),
+            Agent::named("x"),
+        )
+        .with_span("s1");
+        started.set(attr::TOOL_CATEGORY, "shell");
+        let mut done = Event::new(
+            Uuid::now_v7(),
+            "t",
+            EventKind::ToolCompleted,
+            Utc::now(),
+            Agent::named("x"),
+        )
+        .with_span("s1");
+        done.set(attr::TOOL_CATEGORY, "shell");
+        done.set(attr::DURATION_MS, 42);
+        let batch = json!({"schema": SCHEMA, "events": [started, done]});
+        let (status, _) = call(&app, "POST", "/v1/events", host, Some(batch)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = call(&app, "GET", "/v1/stats/tools?days=7", host, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let stats: ToolStats = serde_json::from_value(body).unwrap();
+        assert_eq!(stats.days, 7);
+        assert_eq!(stats.tools.len(), 1);
+        assert_eq!(
+            (
+                stats.tools[0].category.as_str(),
+                stats.tools[0].calls,
+                stats.tools[0].p50_ms
+            ),
+            ("shell", 1, 42)
+        );
+
+        let (_, body) = call(&app, "GET", "/v1/stats/tools?days=9999", host, None).await;
+        assert_eq!(body["days"], 365);
     }
 
     #[tokio::test]

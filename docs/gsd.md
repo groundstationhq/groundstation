@@ -87,6 +87,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 | `POST /v1/adapters/{name}/resync` | Re-read that adapter's transcripts from the start, so stored trajectories pick up what this version derives from them |
 | `GET /v1/trajectories?limit=N` | Trajectory summaries, most recent first |
 | `GET /v1/trajectories/{id}` | One trajectory and its events (unique id prefixes work) |
+| `GET /v1/stats/tools?days=N` | Tool latency per category over the last N days (default 14): calls, failures, p50, p95 and max of `gs.duration_ms` |
 | `GET /v1/health` | Status, counters and transport mode |
 | `POST /v1/shutdown` | Stop the daemon |
 

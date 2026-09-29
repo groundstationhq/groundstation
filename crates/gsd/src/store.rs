@@ -13,7 +13,7 @@ use groundstation_schema::{Event, EventKind, attr};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 
-use crate::api::TrajectorySummary;
+use crate::api::{ToolLatency, TrajectorySummary};
 use crate::perms;
 
 const MIGRATIONS: &[&str] = &[
@@ -383,6 +383,59 @@ impl Store {
         Ok(())
     }
 
+    /// Latency percentiles per tool category for tool calls that closed at or
+    /// after `since_ns`. Uses the closing event's `gs.duration_ms`, so calls
+    /// still open are not counted. Most-called categories first.
+    pub fn tool_latency(&self, since_ns: i64) -> Result<Vec<ToolLatency>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT COALESCE(json_extract(attributes, '$.\"{cat}\"'), json_extract(attributes, '$.\"{name}\"'), 'tool'),
+                    json_extract(attributes, '$.\"{dur}\"'), kind = 'tool.failed'
+             FROM events
+             WHERE kind IN ('tool.completed', 'tool.failed') AND ts_ns >= ?1
+               AND json_extract(attributes, '$.\"{dur}\"') IS NOT NULL
+             ORDER BY 1, 2",
+            cat = attr::TOOL_CATEGORY,
+            name = attr::GEN_AI_TOOL_NAME,
+            dur = attr::DURATION_MS,
+        ))?;
+        let mut by_category: Vec<(String, Vec<i64>, u64)> = Vec::new();
+        let rows = stmt.query_map(params![since_ns], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)? as i64,
+                r.get::<_, bool>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (category, ms, failed) = row?;
+            match by_category.last_mut() {
+                Some((c, durations, fails)) if *c == category => {
+                    durations.push(ms);
+                    *fails += u64::from(failed);
+                }
+                _ => by_category.push((category, vec![ms], u64::from(failed))),
+            }
+        }
+        let mut tools: Vec<ToolLatency> = by_category
+            .into_iter()
+            .map(|(category, durations, failed)| ToolLatency {
+                category,
+                calls: durations.len() as u64,
+                failed,
+                p50_ms: percentile(&durations, 0.5),
+                p95_ms: percentile(&durations, 0.95),
+                max_ms: *durations.last().unwrap_or(&0),
+            })
+            .collect();
+        tools.sort_by(|a, b| {
+            b.calls
+                .cmp(&a.calls)
+                .then_with(|| a.category.cmp(&b.category))
+        });
+        Ok(tools)
+    }
+
     pub fn counts(&self) -> Result<Counts> {
         let conn = self.conn();
         Ok(conn.query_row(
@@ -398,6 +451,15 @@ impl Store {
             },
         )?)
     }
+}
+
+/// Nearest-rank percentile of an ascending list; 0 for an empty list.
+fn percentile(sorted: &[i64], p: f64) -> i64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (p * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
 pub enum Resolved {
@@ -707,6 +769,66 @@ mod tests {
         let (summary, _) = store.trajectory("t1").unwrap().unwrap();
         assert_eq!(summary.status, "running");
         assert!(summary.ended_at.is_none());
+    }
+
+    #[test]
+    fn tool_latency_percentiles_by_category() {
+        let store = Store::open_in_memory().unwrap();
+        let t0 = Utc::now();
+        let mut events = Vec::new();
+        for (i, ms) in [10, 20, 30, 40, 1000].into_iter().enumerate() {
+            let span = format!("shell-{i}");
+            let mut open = ev(
+                "t1",
+                EventKind::ToolStarted,
+                t0 + Duration::seconds(i as i64),
+            )
+            .with_span(&span);
+            open.set(attr::TOOL_CATEGORY, "shell");
+            let mut close = ev(
+                "t1",
+                if i == 4 {
+                    EventKind::ToolFailed
+                } else {
+                    EventKind::ToolCompleted
+                },
+                t0 + Duration::seconds(i as i64) + Duration::milliseconds(ms),
+            )
+            .with_span(&span);
+            close.set(attr::TOOL_CATEGORY, "shell");
+            events.push(new(open));
+            events.push(new(close));
+        }
+        // A closing event without a span still counts when it carries a duration.
+        let mut read = ev("t1", EventKind::ToolCompleted, t0);
+        read.set(attr::GEN_AI_TOOL_NAME, "Read");
+        read.set(attr::DURATION_MS, 7);
+        events.push(new(read));
+        // Still open: not counted.
+        let mut open = ev("t1", EventKind::ToolStarted, t0).with_span("late");
+        open.set(attr::TOOL_CATEGORY, "shell");
+        events.push(new(open));
+        store.insert(events).unwrap();
+
+        let tools = store.tool_latency(0).unwrap();
+        assert_eq!(tools.len(), 2);
+        let shell = &tools[0];
+        assert_eq!(
+            (shell.category.as_str(), shell.calls, shell.failed),
+            ("shell", 5, 1)
+        );
+        assert_eq!((shell.p50_ms, shell.p95_ms, shell.max_ms), (30, 1000, 1000));
+        assert_eq!(
+            (tools[1].category.as_str(), tools[1].calls, tools[1].p50_ms),
+            ("Read", 1, 7)
+        );
+        // The window excludes older calls.
+        let recent = store.tool_latency(ns(t0 + Duration::seconds(3))).unwrap();
+        assert_eq!(recent.iter().map(|t| t.calls).sum::<u64>(), 2);
+
+        assert_eq!(percentile(&[], 0.5), 0);
+        assert_eq!(percentile(&[5], 0.95), 5);
+        assert_eq!(percentile(&[1, 2, 3, 4], 0.5), 2);
     }
 
     #[test]

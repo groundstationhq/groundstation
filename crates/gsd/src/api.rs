@@ -114,6 +114,26 @@ pub struct TrajectoryDetail {
     pub events: Vec<Event>,
 }
 
+/// Tool latency by category over a window (`GET /v1/stats/tools?days=N`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolStats {
+    pub days: u32,
+    pub since: DateTime<Utc>,
+    /// Most-called first.
+    pub tools: Vec<ToolLatency>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolLatency {
+    /// `gs.tool.category`, or the tool name when the adapter set none.
+    pub category: String,
+    pub calls: u64,
+    pub failed: u64,
+    pub p50_ms: i64,
+    pub p95_ms: i64,
+    pub max_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
