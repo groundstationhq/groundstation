@@ -10,3 +10,4 @@ dist
 .cloudflare
 .wrangler
 .cloudflare
+*.tsbuildinfo

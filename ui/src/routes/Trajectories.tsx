@@ -26,7 +26,7 @@ const COLS: Array<[string, string]> = [
   ["Agent", "hidden sm:table-cell"],
   ["Repository", "hidden md:table-cell"],
   ["Started", "hidden lg:table-cell"],
-  ["Duration", "text-right"],
+  ["Duration", "text-right whitespace-nowrap"],
   ["Turns", "hidden lg:table-cell text-right"],
   ["Tools", "hidden md:table-cell text-right"],
   ["Tokens", "hidden sm:table-cell text-right"],
@@ -104,7 +104,7 @@ export function Trajectories() {
                 const s = STATUS[r.status] ?? { dot: "idle" as const, label: r.status, cls: "text-fg-3" };
                 return (
                   <tr key={r.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-bg-2" onClick={() => (location.hash = `#/t/${encodeURIComponent(r.id)}`)}>
-                    <td className="max-w-[360px] px-3 py-2.5 pl-4">
+                    <td className="w-full max-w-0 px-3 py-2.5 pl-4">
                       <a href={`#/t/${encodeURIComponent(r.id)}`} className="block truncate text-[13px] text-fg" onClick={(e) => e.stopPropagation()}>
                         {r.title ?? <span className="text-fg-3">(no prompt captured)</span>}
                       </a>
@@ -126,7 +126,7 @@ export function Trajectories() {
                       {r.tool_errors > 0 && <span className="ml-1 text-err">({r.tool_errors})</span>}
                     </td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])}>{fmtTokens(totalTokens(r))}</td>
-                    <td className="px-3 py-2.5 pr-4 text-right">
+                    <td className="whitespace-nowrap px-3 py-2.5 pr-4 text-right">
                       <span className={cx("mono inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px]", s.cls)}><StatusDot status={s.dot} />{s.label}</span>
                     </td>
                   </tr>
