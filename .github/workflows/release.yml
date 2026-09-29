@@ -1,7 +1,9 @@
 name: Release
 
-# Tag a commit `vX.Y.Z` (matching the workspace version) to build both binaries
-# for every supported target and publish a GitHub Release with checksums.
+# Builds both binaries for every supported target and publishes a GitHub Release
+# with checksums and the changelog section for that version as the notes.
+# Normally started by the "Prepare release" workflow; pushing a `vX.Y.Z` tag by
+# hand works too (the tag must match the workspace version).
 # install.sh resolves "latest" through the VERSION asset, so no API calls are needed.
 
 on:
@@ -82,6 +84,18 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: taiki-e/install-action@git-cliff
+      - name: Release notes from the changelog
+        run: |
+          set -eu
+          git cliff --current --strip all | sed '/^## \[/d' > notes.md
+          # Fall back to a one-liner if the tag has no grouped commits.
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          cat notes.md
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -101,4 +115,5 @@ jobs:
             assets/*.tar.gz
             assets/SHA256SUMS
             assets/VERSION
-          generate_release_notes: true
+          body_path: notes.md
+          generate_release_notes: false

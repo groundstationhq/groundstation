@@ -1,0 +1,89 @@
+name: Prepare release
+
+# Run this from the Actions tab. It bumps the workspace version, regenerates
+# CHANGELOG.md, commits "Release vX.Y.Z", tags it, and dispatches the Release
+# workflow, which builds the binaries and publishes the GitHub Release with
+# that version's changelog section as the notes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Explicit version (overrides bump), e.g. 0.2.0"
+        required: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@git-cliff
+
+      - name: Compute version
+        id: v
+        run: |
+          set -eu
+          current=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ -n "${{ inputs.version }}" ]; then
+            next="${{ inputs.version }}"
+          else
+            major=${current%%.*}; rest=${current#*.}; minor=${rest%%.*}; patch=${rest#*.}; patch=${patch%%-*}
+            case "${{ inputs.bump }}" in
+              major) next="$((major + 1)).0.0" ;;
+              minor) next="$major.$((minor + 1)).0" ;;
+              *)     next="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          echo "$next" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || { echo "not a version: $next" >&2; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then echo "tag v$next already exists" >&2; exit 1; fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Releasing $current -> $next"
+
+      - name: Bump workspace version
+        run: |
+          set -eu
+          sed -i "0,/^version = \"${{ steps.v.outputs.current }}\"/s//version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
+          grep -m1 '^version' Cargo.toml
+          cargo update --workspace --offline 2>/dev/null || cargo update --workspace
+          git diff --stat
+
+      - name: Regenerate CHANGELOG.md
+        run: git cliff --tag "v${{ steps.v.outputs.next }}" -o CHANGELOG.md
+
+      - name: Commit, tag, push
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "Release v${{ steps.v.outputs.next }}"
+          git tag -a "v${{ steps.v.outputs.next }}" -m "v${{ steps.v.outputs.next }}"
+          git push origin HEAD:main "v${{ steps.v.outputs.next }}"
+
+      # Pushes made with GITHUB_TOKEN don't trigger other workflows, so start the build explicitly.
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml -f tag="v${{ steps.v.outputs.next }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Release v${{ steps.v.outputs.next }} prepared"
+            echo
+            echo "Tagged \`v${{ steps.v.outputs.next }}\` and started the Release workflow."
+            echo "Follow it under Actions → Release. The GitHub Release appears when all four targets have built."
+          } >> "$GITHUB_STEP_SUMMARY"
