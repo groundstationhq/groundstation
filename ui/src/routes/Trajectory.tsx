@@ -13,31 +13,27 @@ import { SortToggle, type Order } from "@/components/ui/SortToggle";
 
 const CONTENT_KEYS = new Set<string>([attr.PROMPT_TEXT, attr.TOOL_INPUT, attr.TOOL_OUTPUT, attr.SHELL_COMMAND, attr.SEARCH_PATTERN, attr.ERROR_MESSAGE, attr.NOTIFICATION_MESSAGE]);
 
-export type Filter = "all" | "user" | "tool" | "model" | "agent" | "failed";
+export type Filter = "all" | "user" | "tool" | "model" | "agent" | "notification" | "compaction" | "failed";
 
-/**
- * What the event list can be narrowed to. Kind filters keep user turns and the
- * end of the run as context; "failed" shows only what went wrong.
- */
-const FILTERS: Array<{ id: Filter; label: string; match: (r: Row) => boolean; context: boolean }> = [
-  { id: "all", label: "All events", match: () => true, context: false },
-  { id: "user", label: "Turns", match: (r) => r.eventKind === "turn.user", context: false },
-  { id: "tool", label: "Tools", match: (r) => r.kind === "tool", context: true },
-  { id: "model", label: "Model calls", match: (r) => r.kind === "model", context: true },
-  { id: "agent", label: "Subagents", match: (r) => r.kind === "agent", context: true },
-  { id: "failed", label: "Failed", match: (r) => r.failed || r.kind === "error", context: false },
+/** What the event list can be narrowed to. Each filter shows only its own rows. */
+const FILTERS: Array<{ id: Filter; label: string; match: (r: Row) => boolean }> = [
+  { id: "all", label: "All events", match: () => true },
+  { id: "user", label: "Turns", match: (r) => r.eventKind === "turn.user" },
+  { id: "tool", label: "Tools", match: (r) => r.kind === "tool" },
+  { id: "model", label: "Model calls", match: (r) => r.eventKind.startsWith("model.") },
+  { id: "agent", label: "Subagents", match: (r) => r.kind === "agent" },
+  { id: "notification", label: "Notifications", match: (r) => r.eventKind === "agent.notification" },
+  { id: "compaction", label: "Compactions", match: (r) => r.eventKind === "context.compacted" },
+  { id: "failed", label: "Failed", match: (r) => r.failed || r.kind === "error" },
 ];
-
-const isContext = (r: Row) => r.kind === "user" || r.kind === "complete" || r.kind === "error";
 
 export function applyFilter(rows: Row[], filter: Filter): Row[] {
   const f = FILTERS.find((x) => x.id === filter) ?? FILTERS[0];
-  return rows.filter((r) => f.match(r) || (f.context && isContext(r)));
+  return rows.filter(f.match);
 }
 
 export function filterCounts(rows: Row[]): Record<Filter, number> {
-  const counts = { all: rows.length, user: 0, tool: 0, model: 0, agent: 0, failed: 0 };
-  for (const f of FILTERS) if (f.id !== "all") counts[f.id] = rows.filter(f.match).length;
+  const counts = Object.fromEntries(FILTERS.map((f) => [f.id, f.id === "all" ? rows.length : rows.filter(f.match).length])) as Record<Filter, number>;
   return counts;
 }
 
@@ -387,14 +383,7 @@ export function Trajectory({ id }: { id: string }) {
   const data = st.status === "ok" ? st.data.data : null;
   const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
   const counts = useMemo(() => filterCounts(rows), [rows]);
-  // Header tiles and the minimap sit above the list; bring the list into view when they narrow it.
-  const filtering: Filtering = {
-    filter,
-    onFilter: (f) => {
-      setFilter(f);
-      if (f !== "all") document.getElementById("events")?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
-    },
-  };
+  const filtering: Filtering = { filter, onFilter: setFilter };
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error" || !data) return <Empty title="Couldn't load this trajectory" body={st.status === "error" ? st.error : ""} />;
   const total = Math.max(1, data.duration_ms);
@@ -407,7 +396,7 @@ export function Trajectory({ id }: { id: string }) {
       <div className="overflow-hidden rounded-lg border border-line bg-bg-1">
         <Minimap rows={rows} total={total} running={data.status === "running"} filtering={filtering} />
         <Breakdown rows={rows} total={total} />
-        <div id="events" className="flex flex-wrap items-center justify-between gap-y-1 border-b border-line px-3 py-1.5 scroll-mt-2">
+        <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-line px-3 py-1.5">
           <div className="flex flex-wrap gap-1" role="group" aria-label="Filter events">
             {FILTERS.filter((f) => f.id === "all" || counts[f.id] > 0).map((f) => (
               <button key={f.id} type="button" onClick={() => setFilter(f.id)} aria-pressed={filter === f.id} className={cx("whitespace-nowrap rounded-[4px] px-2 py-1 text-[11.5px] transition-colors", filter === f.id ? "bg-bg-3 text-fg" : "text-fg-3 hover:text-fg-2", f.id === "failed" && filter !== "failed" && "text-err/80 hover:text-err")}>
