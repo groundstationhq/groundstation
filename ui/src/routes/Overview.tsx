@@ -45,7 +45,7 @@ function Card({ title, right, children, preview, className }: { title: string; r
   return (
     <section className={cx("overflow-hidden rounded-lg border border-line bg-bg-1", className)} aria-label={title}>
       <div className="flex h-9 items-center justify-between gap-3 border-b border-line bg-bg-2/70 px-3">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="label whitespace-nowrap text-[10px] text-fg-2">{title}</span>
           {preview && <span className="mono whitespace-nowrap rounded-full border border-agent/40 bg-agent/10 px-1.5 py-px text-[9.5px] text-agent" title="Mocked. This layer of the product is not built yet.">preview · v2</span>}
         </div>
