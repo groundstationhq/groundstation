@@ -176,8 +176,11 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.transport.mode == TransportMode::Cloud && self.upload_endpoint().is_none() {
-            bail!("transport.mode = \"cloud\" requires transport.endpoint");
+        if self.transport.mode == TransportMode::Cloud {
+            let Some(endpoint) = self.upload_endpoint() else {
+                bail!("transport.mode = \"cloud\" requires transport.endpoint");
+            };
+            check_endpoint(endpoint)?;
         }
         Ok(())
     }
@@ -244,6 +247,31 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// The upload token and the events go with every request, so the endpoint must
+/// be `https://`. Plain `http://` is allowed only to this machine, for a
+/// backend running locally.
+fn check_endpoint(endpoint: &str) -> Result<()> {
+    let url = reqwest::Url::parse(endpoint)
+        .with_context(|| format!("transport.endpoint {endpoint:?} is not a URL"))?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        "http" => bail!(
+            "transport.endpoint must use https:// (http:// only for localhost): \
+             the upload token and your events would travel unencrypted to {endpoint}"
+        ),
+        other => bail!("transport.endpoint must be an https:// URL, not {other}://"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +309,39 @@ mod tests {
         let cloud: Config =
             toml::from_str("[transport]\nmode = \"cloud\"\nendpoint = \"https://x\"").unwrap();
         assert_eq!(cloud.upload_endpoint(), Some("https://x"));
+    }
+
+    #[test]
+    fn upload_endpoints_must_be_https_unless_local() {
+        let with = |endpoint: &str| {
+            toml::from_str::<Config>(&format!(
+                "[transport]\nmode = \"cloud\"\nendpoint = \"{endpoint}\""
+            ))
+            .unwrap()
+            .validate()
+        };
+        for ok in [
+            "https://ingest.groundstation.sh",
+            "http://localhost:8080",
+            "http://LOCALHOST",
+            "http://127.0.0.1:8080",
+            "http://127.1.2.3",
+            "http://[::1]:8080",
+        ] {
+            assert!(with(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://ingest.groundstation.sh",
+            "http://192.168.1.10:8080",
+            "http://localhost.evil.example",
+            "ftp://ingest.groundstation.sh",
+            "ingest.groundstation.sh",
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
+        // Local-only mode never uploads, so the endpoint isn't checked.
+        let local: Config =
+            toml::from_str("[transport]\nendpoint = \"http://example.com\"").unwrap();
+        assert!(local.validate().is_ok());
     }
 }

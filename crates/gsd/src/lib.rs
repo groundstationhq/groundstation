@@ -8,7 +8,9 @@
 //! when a backend is configured, uploads them in compressed batches.
 
 pub mod config;
+pub mod git;
 pub mod ingest;
+pub mod outbound;
 pub mod perms;
 pub mod privacy;
 pub mod server;
@@ -38,7 +40,7 @@ pub async fn run(config: Config) -> Result<()> {
     perms::create_dir_all(&data_dir)?;
 
     let store = Arc::new(Store::open(&config.db_path())?);
-    let privacy = Privacy::new(&config)?;
+    let privacy = Privacy::new(&config)?.with_path_key(privacy::path_key(&data_dir)?);
     let ingestor = Arc::new(Ingestor::new(store.clone(), privacy));
 
     let listener = tokio::net::TcpListener::bind(config.daemon.listen)

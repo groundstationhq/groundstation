@@ -1,6 +1,8 @@
 //! `[redaction]` is applied inside the daemon, before anything touches disk,
 //! so nothing that leaves an agent is stored or uploaded unfiltered.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 use groundstation_schema::Event;
 use groundstation_schema::attr;
@@ -55,6 +57,9 @@ pub struct Privacy {
     max_content_bytes: usize,
     store_raw: bool,
     rules: Vec<(Regex, String)>,
+    /// Secret key for `paths = "hash"`, so hashes can't be reversed by
+    /// guessing likely paths or compared across machines. See [`path_key`].
+    path_key: [u8; 32],
 }
 
 impl Privacy {
@@ -105,7 +110,14 @@ impl Privacy {
             paths: r.paths,
             max_content_bytes: config.capture.max_content_bytes,
             rules,
+            path_key: [0; 32],
         })
+    }
+
+    /// Hashes paths with this install's secret key (see [`path_key`]).
+    pub fn with_path_key(mut self, key: [u8; 32]) -> Self {
+        self.path_key = key;
+        self
     }
 
     /// Drops excluded fields, applies the path policy, then redacts secrets
@@ -117,13 +129,13 @@ impl Privacy {
         if self.paths == PathPolicy::Hash {
             for key in attr::PATHS {
                 if let Some(Value::String(s)) = event.attributes.get_mut(*key) {
-                    *s = hash(s);
+                    *s = self.hash(s);
                 }
             }
             if let Some(Value::Object(input)) = event.attributes.get_mut(attr::TOOL_INPUT) {
                 for key in attr::TOOL_INPUT_PATH_KEYS {
                     if let Some(Value::String(s)) = input.get_mut(*key) {
-                        *s = hash(s);
+                        *s = self.hash(s);
                     }
                 }
             }
@@ -137,8 +149,28 @@ impl Privacy {
     pub fn path(&self, path: &str) -> String {
         match self.paths {
             PathPolicy::Keep => path.to_string(),
-            PathPolicy::Hash => hash(path),
+            PathPolicy::Hash => self.hash(path),
         }
+    }
+
+    /// A stable stand-in for a path: HMAC-SHA256 under the install's key,
+    /// truncated. The same path always gives the same value on this machine.
+    fn hash(&self, s: &str) -> String {
+        let mut inner_pad = [0x36u8; 64];
+        let mut outer_pad = [0x5cu8; 64];
+        for (i, k) in self.path_key.iter().enumerate() {
+            inner_pad[i] ^= k;
+            outer_pad[i] ^= k;
+        }
+        let inner = Sha256::new()
+            .chain_update(inner_pad)
+            .chain_update(s.as_bytes())
+            .finalize();
+        let mac = Sha256::new()
+            .chain_update(outer_pad)
+            .chain_update(inner)
+            .finalize();
+        format!("sha256:{}", &hex::encode(mac)[..16])
     }
 
     /// The original agent payload, if the policy allows keeping it.
@@ -229,11 +261,28 @@ fn resolve_exclude(entries: &[String]) -> Result<Vec<&'static str>> {
     Ok(keys)
 }
 
-fn hash(s: &str) -> String {
-    format!(
-        "sha256:{}",
-        &hex::encode(Sha256::digest(s.as_bytes()))[..16]
-    )
+/// This install's key for hashing paths, kept in `<data_dir>/path-key` and
+/// created on first use. Readable by the owner only; deleting it changes
+/// every hash from then on.
+pub fn path_key(data_dir: &Path) -> Result<[u8; 32]> {
+    let file = data_dir.join("path-key");
+    match std::fs::read(&file) {
+        Ok(bytes) => bytes.try_into().map_err(|_| {
+            anyhow::anyhow!(
+                "{} is not a 32-byte key; delete it to make a new one",
+                file.display()
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut key = [0u8; 32];
+            std::fs::File::open("/dev/urandom")
+                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut key))
+                .context("reading random bytes for the path key")?;
+            crate::perms::write(&file, &key)?;
+            Ok(key)
+        }
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    }
 }
 
 fn truncate(s: &mut String, max: usize) {
@@ -423,6 +472,39 @@ mod tests {
         );
         assert_eq!(p.path("/home/u/secret-project/src/a.rs"), file);
         assert!(p.raw(&json!({})).is_none());
+    }
+
+    #[test]
+    fn path_hashes_depend_on_the_install_key() {
+        let hashed = |key: [u8; 32]| {
+            privacy(|c| c.redaction.paths = PathPolicy::Hash)
+                .with_path_key(key)
+                .path("/Users/ana/src/shop")
+        };
+        assert_eq!(hashed([1; 32]), hashed([1; 32]));
+        assert_ne!(hashed([1; 32]), hashed([2; 32]));
+        // Not the plain digest anyone could compute from a guessed path.
+        let plain = hex::encode(Sha256::digest(b"/Users/ana/src/shop"));
+        assert!(!plain.starts_with(&hashed([1; 32])["sha256:".len()..]));
+    }
+
+    #[test]
+    fn the_path_key_is_made_once_and_kept_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = path_key(dir.path()).unwrap();
+        assert_eq!(path_key(dir.path()).unwrap(), key);
+        assert_ne!(key, [0; 32]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("path-key"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::write(dir.path().join("path-key"), b"short").unwrap();
+        assert!(path_key(dir.path()).is_err());
     }
 
     #[test]

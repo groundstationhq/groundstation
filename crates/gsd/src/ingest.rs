@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,11 +13,10 @@ use groundstation_adapter_codex::Codex;
 use groundstation_adapter_opencode::OpenCode;
 use groundstation_adapter_pi::Pi;
 use groundstation_api::{ResyncFailure, ResyncResponse, SpoolItem};
-use groundstation_schema::{
-    Adapter, Batch, Event, EventKind, HookEnvelope, SCHEMA, ToolCategory, attr,
-};
+use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 use serde_json::Value;
 
+use crate::git::Repo;
 use crate::privacy::Privacy;
 use crate::store::{NewEvent, Store};
 
@@ -38,18 +36,6 @@ struct Registered {
     roots: Vec<PathBuf>,
 }
 
-/// How long a looked-up checkout is trusted before git is asked again, so a
-/// burst of hooks runs git once.
-const CHECKOUT_TTL: Duration = Duration::from_secs(2);
-
-/// What a trajectory's working directory had checked out when last asked.
-struct Checkout {
-    cwd: String,
-    revision: Option<String>,
-    branch: Option<String>,
-    at: Instant,
-}
-
 pub struct Ingestor {
     pub store: Arc<Store>,
     privacy: Privacy,
@@ -59,8 +45,9 @@ pub struct Ingestor {
     /// requested meanwhile. Concurrent hooks for one session coalesce into
     /// one reader instead of re-reading the same bytes in parallel.
     syncing: Mutex<HashMap<String, bool>>,
-    /// Last checkout seen per trajectory.
-    checkouts: Mutex<HashMap<String, Checkout>>,
+    /// Last working directory seen per trajectory, for events that don't
+    /// carry one, and when it was seen.
+    cwds: Mutex<HashMap<String, (String, Instant)>>,
 }
 
 /// Work left after a hook's events are stored: reading transcripts and
@@ -93,7 +80,7 @@ impl Ingestor {
             host: gethostname::gethostname().to_string_lossy().into_owned(),
             adapters,
             syncing: Mutex::default(),
-            checkouts: Mutex::default(),
+            cwds: Mutex::default(),
         }
     }
 
@@ -369,17 +356,26 @@ impl Ingestor {
     }
 
     /// Resolves the git repository of a trajectory's working directory, once
-    /// per trajectory. `cwd` is the unredacted path; the repository is stored
-    /// under the path policy like any other path.
+    /// per trajectory: its top-level directory (stored under the path policy
+    /// like any other path) and its name outside this machine. `cwd` is the
+    /// unredacted path.
     fn enrich_repository(&self, trajectory_id: &str, cwd: &str) {
         if !self.store.take_repo_lookup(trajectory_id).unwrap_or(false) {
             return;
         }
-        let Some(repository) = git(cwd, &["rev-parse", "--show-toplevel"]) else {
+        let Some(repo) = Repo::discover(Path::new(cwd)) else {
             return;
         };
-        let repository = self.privacy.path(&repository);
-        if let Err(e) = self.store.set_repository(trajectory_id, &repository) {
+        let repository = self.privacy.path(&repo.root.to_string_lossy());
+        // The origin remote (`github.com/acme/shop`), else the directory name.
+        let origin = repo
+            .origin()
+            .or_else(|| Some(repo.root.file_name()?.to_string_lossy().into_owned()))
+            .map(|o| self.privacy.path(&o));
+        if let Err(e) = self
+            .store
+            .set_repository(trajectory_id, &repository, origin.as_deref())
+        {
             tracing::warn!("storing repository for {trajectory_id}: {e:#}");
         }
     }
@@ -387,76 +383,41 @@ impl Ingestor {
     /// Stamps each event with the commit and branch checked out when it
     /// happened, so a trajectory that spans commits records each one. Runs on
     /// events as they arrive (hooks, SDK batches) and before the path policy
-    /// can hide the working directory. Events read from transcripts later are
-    /// filled in by the store from the trajectory's timeline instead.
+    /// can hide the working directory. Reading the repository's files is cheap,
+    /// so every event looks. Events read from transcripts later are filled in
+    /// by the store from the trajectory's timeline instead.
     fn stamp_checkout(&self, events: &mut [Event]) {
-        let mut checkouts = self.checkouts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cwds = self.cwds.lock().unwrap_or_else(|e| e.into_inner());
         for event in events {
+            if let Some(cwd) = event.get(attr::CWD).and_then(Value::as_str) {
+                cwds.insert(
+                    event.trajectory_id.clone(),
+                    (cwd.to_string(), Instant::now()),
+                );
+            }
             if event.get(attr::VCS_REVISION).is_some() {
                 continue; // the sender knew better
             }
-            let known = checkouts.get(&event.trajectory_id);
-            let Some(cwd) = event
-                .get(attr::CWD)
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| known.map(|c| c.cwd.clone()))
-            else {
+            let Some((cwd, _)) = cwds.get(&event.trajectory_id) else {
                 continue;
             };
-            let stale = known.is_none_or(|c| {
-                c.cwd != cwd || c.at.elapsed() >= CHECKOUT_TTL || may_move_head(event)
-            });
-            if stale {
-                let checkout = Checkout {
-                    revision: git(&cwd, &["rev-parse", "-q", "--verify", "HEAD"]),
-                    // Works before the first commit, unlike `rev-parse`.
-                    branch: git(&cwd, &["symbolic-ref", "-q", "--short", "HEAD"]),
-                    cwd,
-                    at: Instant::now(),
-                };
-                checkouts.insert(event.trajectory_id.clone(), checkout);
+            let Some(repo) = Repo::discover(Path::new(cwd)) else {
+                continue;
+            };
+            let head = repo.head();
+            if let Some(revision) = head.revision {
+                event.set(attr::VCS_REVISION, revision);
             }
-            let checkout = &checkouts[&event.trajectory_id];
-            if let Some(revision) = &checkout.revision {
-                event.set(attr::VCS_REVISION, revision.as_str());
-            }
-            if let Some(branch) = &checkout.branch
+            if let Some(branch) = head.branch
                 && event.get(attr::VCS_BRANCH).is_none()
             {
-                event.set(attr::VCS_BRANCH, branch.as_str());
+                event.set(attr::VCS_BRANCH, branch);
             }
         }
-        if checkouts.len() > 256 {
-            checkouts.retain(|_, c| c.at.elapsed() < Duration::from_secs(3600));
+        if cwds.len() > 256 {
+            cwds.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(3600));
         }
     }
-}
-
-/// Whether HEAD may have just moved: a new user turn, or a finished shell
-/// command (where commits, checkouts and rebases happen).
-fn may_move_head(event: &Event) -> bool {
-    match event.kind {
-        EventKind::TurnUser => true,
-        EventKind::ToolCompleted | EventKind::ToolFailed => {
-            event.get(attr::TOOL_CATEGORY).and_then(Value::as_str)
-                == Some(ToolCategory::Shell.as_str())
-        }
-        _ => false,
-    }
-}
-
-/// Runs git in `cwd` and returns its trimmed output, or `None` on failure or
-/// empty output.
-fn git(cwd: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
 }
 
 /// The working directory of each trajectory, captured before the path
@@ -481,6 +442,7 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
     use std::io::Write;
+    use std::process::Command;
     use uuid::Uuid;
 
     fn ingestor() -> Ingestor {
@@ -752,6 +714,58 @@ mod tests {
         );
         assert_eq!(summary.revision, Some(second));
         assert_eq!(summary.branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn a_booby_trapped_repository_runs_nothing() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        if !git(&["init", "-q", "-b", "main"]) {
+            return; // git unavailable
+        }
+        let marker = repo.path().join("ran");
+        let trap = format!("touch {}; true", marker.display());
+        for key in [
+            "core.fsmonitor",
+            "core.pager",
+            "core.sshCommand",
+            "diff.external",
+        ] {
+            assert!(git(&["config", key, &trap]));
+        }
+        assert!(git(&[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:acme/shop.git"
+        ]));
+
+        let cwd = repo.path().display().to_string();
+        let ing = ingestor();
+        ing.ingest_hook_now(
+            "claude-code",
+            HookEnvelope {
+                id: Uuid::now_v7(),
+                observed_at: Utc::now(),
+                payload: json!({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "cwd": cwd, "prompt": "go"}),
+            },
+        )
+        .unwrap();
+        assert!(
+            !marker.exists(),
+            "gsd ran something the repository configured"
+        );
+        let (summary, _) = ing.store.trajectory("s1").unwrap().unwrap();
+        assert_eq!(summary.branch.as_deref(), Some("main"));
+        let place = &ing.store.pending_upload(1).unwrap()[0].place;
+        assert_eq!(place.origin.as_deref(), Some("github.com/acme/shop"));
     }
 
     #[test]

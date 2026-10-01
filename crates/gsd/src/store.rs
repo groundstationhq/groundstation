@@ -69,6 +69,9 @@ CREATE TABLE transcripts (
     "ALTER TABLE events ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0;",
     // The commit a trajectory started on.
     "ALTER TABLE trajectories ADD COLUMN revision TEXT;",
+    // The repository's name outside this machine: its origin remote, or the
+    // directory name.
+    "ALTER TABLE trajectories ADD COLUMN origin TEXT;",
 ];
 
 pub struct Store {
@@ -80,6 +83,22 @@ pub struct Transcript {
     pub path: String,
     pub adapter: Option<String>,
     pub trajectory_id: Option<String>,
+}
+
+/// A queued upload: the stored event and where its trajectory ran.
+pub struct Pending {
+    pub seq: i64,
+    pub event: Event,
+    pub place: Place,
+}
+
+/// Where a trajectory ran, as stored locally (under the path policy).
+#[derive(Debug, Default, Clone)]
+pub struct Place {
+    /// The repository's top-level directory.
+    pub repository: Option<String>,
+    /// The repository's name outside this machine.
+    pub origin: Option<String>,
 }
 
 /// An event plus the agent payload it was derived from, if retained.
@@ -218,10 +237,10 @@ impl Store {
         Ok(changed == 1)
     }
 
-    pub fn set_repository(&self, id: &str, repository: &str) -> Result<()> {
+    pub fn set_repository(&self, id: &str, repository: &str, origin: Option<&str>) -> Result<()> {
         self.conn().execute(
-            "UPDATE trajectories SET repository = ?2 WHERE id = ?1",
-            params![id, repository],
+            "UPDATE trajectories SET repository = ?2, origin = ?3 WHERE id = ?1",
+            params![id, repository, origin],
         )?;
         Ok(())
     }
@@ -359,10 +378,9 @@ impl Store {
         Ok(Some((summary, events)))
     }
 
-    /// Oldest events not yet accepted by the backend, with their sequence
-    /// numbers. Each also carries its trajectory's host and repository, which
-    /// the stored event lacks.
-    pub fn pending_upload(&self, limit: usize) -> Result<Vec<(i64, Event)>> {
+    /// Oldest events not yet accepted by the backend, each with its
+    /// trajectory's repository, which the stored event lacks.
+    pub fn pending_upload(&self, limit: usize) -> Result<Vec<Pending>> {
         let conn = self.conn();
         let columns = EVENT_COLUMNS
             .split(", ")
@@ -370,26 +388,17 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT e.seq, {columns}, t.host, t.repository
+            "SELECT e.seq, {columns}, t.repository, t.origin
              FROM events e LEFT JOIN trajectories t ON t.id = e.trajectory_id
              WHERE e.uploaded = 0 ORDER BY e.seq LIMIT ?1"
         ))?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let seq: i64 = row.get(0)?;
-            let context = [
-                (attr::HOST_NAME, row.get::<_, Option<String>>(10)?),
-                (attr::VCS_REPOSITORY, row.get(11)?),
-            ];
-            event_from_row_at(row, 1).map(|r| {
-                r.map(|mut e| {
-                    for (key, value) in context {
-                        if let Some(value) = value {
-                            e.attributes.entry(key).or_insert(Value::String(value));
-                        }
-                    }
-                    (seq, e)
-                })
-            })
+            let place = Place {
+                repository: row.get(10)?,
+                origin: row.get(11)?,
+            };
+            event_from_row_at(row, 1).map(|r| r.map(|event| Pending { seq, event, place }))
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from).and_then(|e| e))
             .collect()
@@ -828,23 +837,20 @@ mod tests {
     }
 
     #[test]
-    fn uploads_carry_host_and_repository() {
+    fn queued_uploads_know_where_their_trajectory_ran() {
         let store = Store::open_in_memory().unwrap();
         store
             .insert(vec![new(ev("a", EventKind::AgentStarted, Utc::now()))])
             .unwrap();
-        store.set_repository("a", "/src/shop").unwrap();
+        store
+            .set_repository("a", "/src/shop", Some("github.com/acme/shop"))
+            .unwrap();
 
         let pending = store.pending_upload(10).unwrap();
-        let event = &pending[0].1;
-        assert_eq!(event.get(attr::HOST_NAME), Some(&Value::from("host-a")));
-        assert_eq!(
-            event.get(attr::VCS_REPOSITORY),
-            Some(&Value::from("/src/shop"))
-        );
-        // The stored event is unchanged.
-        let (_, events) = store.trajectory("a").unwrap().unwrap();
-        assert_eq!(events[0].get(attr::HOST_NAME), None);
+        let place = &pending[0].place;
+        assert_eq!(place.repository.as_deref(), Some("/src/shop"));
+        assert_eq!(place.origin.as_deref(), Some("github.com/acme/shop"));
+        assert_eq!(pending[0].event.get(attr::HOST_NAME), None);
     }
 
     #[test]
@@ -906,7 +912,7 @@ mod tests {
         let mut model = ev("a", EventKind::ModelCompleted, Utc::now());
         model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
         store.insert(vec![new(model.clone())]).unwrap();
-        let seq = store.pending_upload(1).unwrap()[0].0;
+        let seq = store.pending_upload(1).unwrap()[0].seq;
         assert!(store.record_rejections(&[seq], 2).unwrap().is_empty());
         assert_eq!(store.record_rejections(&[seq], 2).unwrap(), vec![seq]);
         assert_eq!(store.counts().unwrap().dropped_upload, 1);

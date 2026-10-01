@@ -30,7 +30,7 @@ What exists today, and constrains this design:
 - **Redaction happens before upload.** Secrets, env values, excluded content fields and hashed paths are handled in `gsd` before anything is stored, so the cloud only ever receives what the user's `[redaction]` config allows. Raw agent payloads are never uploaded; only normalized `Event`s are.
 - **Event ids are stable.** They are derived from the hook invocation or the transcript message id. The same event is redelivered with the same id.
 - **Some events change.** `model.completed` events are re-read from growing transcripts. When their attributes change, `gsd` updates the row and resets `uploaded = 0`, so the same event id is uploaded again with newer content. Every other kind is write-once.
-- **Git checkout is on every event.** Each event records the commit and branch checked out when it happened (`gs.vcs.revision`, `gs.vcs.branch`), so a long trajectory that spans commits records each one. Host and repository don't change within a trajectory: they live on the local `trajectories` table, and the uploader adds them to each event it sends (§11.1).
+- **Git checkout is on every event.** Each event records the commit and branch checked out when it happened (`gs.vcs.revision`, `gs.vcs.branch`), so a long trajectory that spans commits records each one. The repository doesn't change within a trajectory: it lives on the local `trajectories` table, and the uploader adds its name to each event it sends (§11.1). The hostname never leaves the machine.
 - **The UI.** `ui/src/lib/api.ts` fetches relative paths (`BASE = ""`). When `/v1/health` fails for any reason, it switches to demo fixtures.
 
 ## 3. Goals and non-goals
@@ -189,7 +189,6 @@ CREATE TABLE events
     retain_until    DateTime('UTC'),
 
     -- Hot attributes, extracted once at insert for aggregation.
-    host            LowCardinality(String) MATERIALIZED JSONExtractString(attributes, 'gs.host.name'),
     repository      String                 MATERIALIZED JSONExtractString(attributes, 'gs.vcs.repository'),
     branch          String                 MATERIALIZED JSONExtractString(attributes, 'gs.vcs.branch'),
     revision        String                 MATERIALIZED JSONExtractString(attributes, 'gs.vcs.revision'),
@@ -214,7 +213,7 @@ Decisions:
 - **The dedup key is `(tenant_id, trajectory_id, event_id)`**, and the version is `received_at`. A redelivered event collapses into one row. For an updated `model.completed`, the newest upload wins, matching `gsd`'s local rule. Each `gsd` uploads in `seq` order, one batch at a time, so a newer version of an event always arrives after the older one.
 - **Merges are eventual, so every read deduplicates**, with `ORDER BY received_at DESC LIMIT 1 BY event_id` or `argMax(…, received_at)`. Reads never trust that merges have run. This also covers the rare case where an event's two versions land in different monthly partitions.
 - **`trajectory_id` is in the sort key**, so reading one trajectory's events is a range scan.
-- **Attribute names are the same strings as in `groundstation_schema::attr`.** The DDL is generated from those constants in a build step, so the names are never written twice by hand. `gs.host.name`, `gs.vcs.repository`, `gs.vcs.branch` and `gs.vcs.revision` were added for this (§11.1).
+- **Attribute names are the same strings as in `groundstation_schema::attr`.** The DDL is generated from those constants in a build step, so the names are never written twice by hand. `gs.vcs.repository`, `gs.vcs.branch` and `gs.vcs.revision` were added for this (§11.1).
 - **Retention is per tenant.** ingest computes `retain_until` from the tenant's plan at insert time. A plan change applies to new events. Shortening retention for existing events is an `ALTER TABLE … UPDATE`, run as a rare admin operation.
 - **Attributes stay a JSON string.** ClickHouse's `JSON` type would help, but the attribute set is open-ended and changes with adapters. Hot fields are materialized, and everything else is extracted at query time. Revisit once the `JSON` type has settled in production for us.
 
@@ -246,7 +245,7 @@ With the revision on every event, "did p95 tool latency or cost change after com
 `GET /v1/trajectories?limit=N` then takes two steps:
 
 1. Pick the top N `trajectory_id`s by `max(updated_at)` from `traj_index` for the tenant.
-2. Compute the full `TrajectorySummary` for just those N from deduplicated `events`: counts, token sums, cost, `status`, `title`, `ended_at`, host and repository from any non-empty value, and branch and revision from the latest event that has them.
+2. Compute the full `TrajectorySummary` for just those N from deduplicated `events`: counts, token sums, cost, `status`, `title`, `ended_at`, repository from any non-empty value, and branch and revision from the latest event that has them.
 
 Status, title and `ended_at` follow the rules in `upsert_trajectory` (`crates/gsd/src/store.rs`): status follows the latest status-bearing event, late events don't rewind it, and a resume reopens a completed trajectory. To keep the two hosts in agreement, the local store tests and the hosted query tests run the same fixture trajectories and must produce identical summaries (§12).
 
@@ -353,7 +352,7 @@ A model can write better narrative findings than rules, but it needs content: pr
 
 ## 10. Privacy and security
 
-- **What the cloud stores** is exactly what `gsd` uploads after redaction. That can include prompt text, tool bodies and shell commands unless the user excludes them. The docs and the `groundstation` CLI must say this plainly before cloud mode is turned on.
+- **What the cloud stores** is exactly what `gsd` uploads after redaction, with paths made relative to the repository (§11.1). That can include prompt text, tool bodies and shell commands unless the user excludes them. The docs and the `groundstation` CLI must say this plainly before cloud mode is turned on.
 - **The logging rule applies in the cloud too.** No cloud service logs content attributes (`attr::CONTENT`) or tokens. Request logs record tenant, token id, byte counts, event counts, status and latency. Error messages that could echo input are truncated and scrubbed.
 - **Encryption:** TLS to the edge and between services and databases, and encryption at rest from the managed providers.
 - **Deletion:** deleting a tenant deletes its Postgres rows immediately and its ClickHouse rows with `ALTER TABLE … DELETE WHERE tenant_id = …`. Deleting a single trajectory is supported the same way.
@@ -363,8 +362,9 @@ A model can write better narrative findings than rules, but it needs content: pr
 
 ### 11.1 Git checkout and trajectory context on events (done)
 
-- **Per event, at ingest:** `gs.vcs.revision` and `gs.vcs.branch`, the checkout when the event happened. `gsd` caches the checkout per trajectory and asks git at most every 2 s, and always on a new user turn and after a shell command, where HEAD moves. Model calls read from transcripts take the checkout of the latest event before them, so re-reading a transcript doesn't change them. Stamping at ingest rather than at upload means a backlog uploaded later still carries the right commit.
-- **Per trajectory, at upload:** `gs.host.name` and `gs.vcs.repository` don't change within a trajectory. They stay on the local `trajectories` row, and the uploader adds them to each event it sends. With `paths = "hash"`, the repository is hashed like any other path. The repository lookup runs shortly after a trajectory's first event, so an early event may upload without it; the cloud takes any non-empty value across the trajectory's events.
+- **Per event, at ingest:** `gs.vcs.revision` and `gs.vcs.branch`, the checkout when the event happened. `gsd` reads them from the repository's files on every hook (`.git/HEAD`, loose and packed refs, worktree links) and never runs `git`, so a repository's config can't execute anything in the daemon. Model calls read from transcripts take the checkout of the latest event before them, so re-reading a transcript doesn't change them. Stamping at ingest rather than at upload means a backlog uploaded later still carries the right commit.
+- **Per trajectory, at upload:** each event gets `gs.vcs.repository`, the repository's name outside the machine: its `origin` remote without scheme or credentials (`github.com/acme/shop`), or its directory name. It's the same on every teammate's machine, so the backend can group by repository. The hostname is not uploaded: hostnames often carry a person's name, so the hosted `TrajectorySummary.host` is always empty.
+- **Paths leave relative to the repository.** The local store keeps full paths for the local UI. Uploads carry `gs.file.path` and tool-input paths relative to the repository root (`src/checkout.rs`), absolute paths outside it as just a file name, `gs.cwd` relative to the root (dropped outside one), and no `gs.transcript.path`. No home directory or username leaves the machine through a path field. With `paths = "hash"`, paths are HMAC-SHA256 hashes under a per-install key and leave as stored: they can't be reversed by guessing likely paths, and don't match across machines.
 - `TrajectorySummary.revision` and `branch` are the latest checkout. The UI shows the short revision, a commit count, and a "HEAD moved" divider in the event list.
 
 ### 11.2 Uploader error handling (done)

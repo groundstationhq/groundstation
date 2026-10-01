@@ -23,7 +23,8 @@ use reqwest::header::RETRY_AFTER;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, PathPolicy};
+use crate::outbound;
 use crate::store::Store;
 
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
@@ -85,6 +86,7 @@ pub async fn run(
             return;
         }
     };
+    let paths = config.redaction.paths;
     let interval = Duration::from_secs(transport.flush_interval_secs.max(1));
     let mut backoff = interval;
     // Shrinks when the backend says a batch is too large, grows back on success.
@@ -92,7 +94,7 @@ pub async fn run(
     tracing::info!(%url, "uploading events");
 
     loop {
-        let result = flush(&client, &url, token, &store, limit).await;
+        let result = flush(&client, &url, token, &store, limit, paths).await;
         state.record(&result);
         let wait = match result {
             Ok(sent) => {
@@ -117,7 +119,7 @@ pub async fn run(
             _ = tokio::time::sleep(wait) => {}
             _ = shutdown.changed() => {
                 // One last attempt so a clean shutdown doesn't strand a batch.
-                let _ = flush(&client, &url, token, &store, limit).await;
+                let _ = flush(&client, &url, token, &store, limit, paths).await;
                 return;
             }
         }
@@ -153,6 +155,7 @@ async fn flush(
     token: Option<&str>,
     store: &Arc<Store>,
     limit: usize,
+    paths: PathPolicy,
 ) -> Result<usize, Failure> {
     let s = store.clone();
     let pending = blocking(move || s.pending_upload(limit.max(1))).await?;
@@ -160,8 +163,15 @@ async fn flush(
         return Ok(0);
     }
     let sent = pending.len();
-    let mut seqs: HashMap<Uuid, i64> = pending.iter().map(|(seq, e)| (e.id, *seq)).collect();
-    let body = encode(pending.into_iter().map(|(_, e)| e).collect())?;
+    let mut seqs: HashMap<Uuid, i64> = pending.iter().map(|p| (p.event.id, p.seq)).collect();
+    let events = pending
+        .into_iter()
+        .map(|mut p| {
+            outbound::prepare(&mut p.event, &p.place, paths);
+            p.event
+        })
+        .collect();
+    let body = encode(events)?;
 
     let mut req = client
         .post(url)
@@ -255,7 +265,7 @@ mod tests {
     use chrono::Utc;
     use flate2::read::GzDecoder;
     use groundstation_api::Rejection;
-    use groundstation_schema::{Agent, EventKind};
+    use groundstation_schema::{Agent, EventKind, attr};
     use std::io::Read;
     use std::sync::Mutex;
 
@@ -317,15 +327,21 @@ mod tests {
         let client = reqwest::Client::new();
 
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2).await.unwrap(),
+            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+                .await
+                .unwrap(),
             2
         );
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2).await.unwrap(),
+            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+                .await
+                .unwrap(),
             1
         );
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2).await.unwrap(),
+            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+                .await
+                .unwrap(),
             0
         );
 
@@ -360,16 +376,25 @@ mod tests {
         let client = reqwest::Client::new();
 
         // The refused event goes back in the queue; the others are done.
-        flush(&client, &url, None, &store, 10).await.unwrap();
+        flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+            .await
+            .unwrap();
         assert_eq!(store.counts().unwrap().pending_upload, 1);
         for _ in 1..MAX_ATTEMPTS {
-            flush(&client, &url, None, &store, 10).await.unwrap();
+            flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+                .await
+                .unwrap();
         }
         let counts = store.counts().unwrap();
         assert_eq!(counts.pending_upload, 0);
         assert_eq!(counts.dropped_upload, 1);
         assert_eq!(counts.events, 3, "dropped events stay in the store");
-        assert_eq!(flush(&client, &url, None, &store, 10).await.unwrap(), 0);
+        assert_eq!(
+            flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+                .await
+                .unwrap(),
+            0
+        );
         assert_eq!(received.lock().unwrap().len(), MAX_ATTEMPTS as usize);
     }
 
@@ -387,10 +412,15 @@ mod tests {
         let client = reqwest::Client::new();
 
         assert!(matches!(
-            flush(&client, &url, None, &store, 2).await,
+            flush(&client, &url, None, &store, 2, PathPolicy::Keep).await,
             Err(Failure::TooLarge)
         ));
-        assert_eq!(flush(&client, &url, None, &store, 1).await.unwrap(), 1);
+        assert_eq!(
+            flush(&client, &url, None, &store, 1, PathPolicy::Keep)
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(store.counts().unwrap().pending_upload, 1);
     }
 
@@ -402,7 +432,7 @@ mod tests {
 
         for _ in 0..MAX_ATTEMPTS + 1 {
             assert!(matches!(
-                flush(&client, &url, None, &store, 10).await,
+                flush(&client, &url, None, &store, 10, PathPolicy::Keep).await,
                 Err(Failure::Transient { .. })
             ));
         }
@@ -417,7 +447,7 @@ mod tests {
         let client = reqwest::Client::new();
         let state = UploadState::default();
 
-        state.record(&flush(&client, &url, None, &store, 10).await);
+        state.record(&flush(&client, &url, None, &store, 10, PathPolicy::Keep).await);
         let error = state.last_error().expect("a failure is recorded");
         assert!(error.message.contains("401"), "{}", error.message);
 
@@ -429,6 +459,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uploads_say_where_within_the_repository_not_on_disk() {
+        let (url, received) = backend(|_| "ok".into_response()).await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut event = Event::new(
+            Uuid::now_v7(),
+            "t",
+            EventKind::ToolStarted,
+            Utc::now(),
+            Agent::named("x"),
+        );
+        event.set(attr::CWD, "/Users/ana/src/shop");
+        event.set(attr::FILE_PATH, "/Users/ana/src/shop/src/lib.rs");
+        store
+            .insert(vec![NewEvent {
+                event,
+                raw: None,
+                host: Some("ana-mbp".into()),
+            }])
+            .unwrap();
+        store
+            .set_repository("t", "/Users/ana/src/shop", Some("github.com/acme/shop"))
+            .unwrap();
+
+        flush(
+            &reqwest::Client::new(),
+            &url,
+            None,
+            &store,
+            10,
+            PathPolicy::Keep,
+        )
+        .await
+        .unwrap();
+        let received = received.lock().unwrap();
+        let sent = &received[0].1.events[0];
+        assert_eq!(
+            sent.get(attr::FILE_PATH),
+            Some(&serde_json::json!("src/lib.rs"))
+        );
+        assert_eq!(sent.get(attr::CWD), Some(&serde_json::json!(".")));
+        assert_eq!(
+            sent.get(attr::VCS_REPOSITORY),
+            Some(&serde_json::json!("github.com/acme/shop"))
+        );
+        assert_eq!(sent.get(attr::HOST_NAME), None, "the hostname stays home");
+        // The local copy keeps the full path for the local UI.
+        let (_, events) = store.trajectory("t").unwrap().unwrap();
+        assert_eq!(
+            events[0].get(attr::FILE_PATH),
+            Some(&serde_json::json!("/Users/ana/src/shop/src/lib.rs"))
+        );
+    }
+
+    #[tokio::test]
     async fn honors_retry_after_when_rate_limited() {
         let (url, _) =
             backend(|_| (StatusCode::TOO_MANY_REQUESTS, [(RETRY_AFTER, "7")]).into_response())
@@ -436,7 +520,7 @@ mod tests {
         let (store, _) = store_with(1);
         let client = reqwest::Client::new();
 
-        match flush(&client, &url, None, &store, 10).await {
+        match flush(&client, &url, None, &store, 10, PathPolicy::Keep).await {
             Err(Failure::Transient { retry_after, .. }) => {
                 assert_eq!(retry_after, Some(Duration::from_secs(7)))
             }
