@@ -57,22 +57,45 @@ pub struct ResyncFailure {
     pub error: String,
 }
 
+/// `GET /v1/health`. Both hosts serve it; the fields that only describe a
+/// daemon on one machine are `None` on the hosted backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
-    /// Whether this daemon serves the UI at `/` (false for builds without `ui/dist`).
+    /// Which host is answering.
+    #[serde(default)]
+    pub deployment: Deployment,
+    /// Optional endpoint groups this host serves (e.g. `insights`), for the UI
+    /// to feature-detect. Empty for gsd.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Whether this host serves the UI at `/` (false for builds without `ui/dist`).
     #[serde(default)]
     pub ui: bool,
-    /// Adapters this daemon accepts at `/v1/adapters/{name}`.
+    /// Adapters this host accepts at `/v1/adapters/{name}`.
     pub adapters: Vec<String>,
     pub version: String,
     pub schema: String,
-    pub pid: u32,
-    pub data_dir: String,
     pub trajectories: u64,
     pub events: u64,
-    pub spool_pending: usize,
-    pub upload: UploadStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_pending: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<UploadStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployment {
+    /// gsd on the user's machine.
+    #[default]
+    Local,
+    /// The hosted backend.
+    Hosted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +109,15 @@ pub struct UploadStatus {
     /// repeatedly. They stay in the local store.
     #[serde(default)]
     pub dropped: u64,
+    /// The most recent failed upload, cleared by the next success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<UploadError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UploadError {
+    pub message: String,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,4 +190,35 @@ pub struct ToolLatency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_reads_older_daemons_and_the_hosted_backend() {
+        // A gsd from before `deployment` and `features` existed.
+        let old: Health = serde_json::from_str(
+            r#"{"status":"ok","adapters":[],"version":"0.1.2","schema":"groundstation.telemetry.v0",
+                "pid":7,"data_dir":"/d","trajectories":1,"events":2,"spool_pending":0,
+                "upload":{"mode":"local-only","endpoint":null,"pending":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.deployment, Deployment::Local);
+        assert_eq!(old.pid, Some(7));
+        assert_eq!(old.upload.unwrap().last_error, None);
+
+        // The hosted backend leaves out what only describes one machine.
+        let hosted: Health = serde_json::from_str(
+            r#"{"status":"ok","deployment":"hosted","features":["insights"],"adapters":[],
+                "version":"1.0.0","schema":"groundstation.telemetry.v0","trajectories":1,"events":2}"#,
+        )
+        .unwrap();
+        assert_eq!(hosted.deployment, Deployment::Hosted);
+        assert_eq!(hosted.features, ["insights"]);
+        assert_eq!((hosted.pid, hosted.upload.is_none()), (None, true));
+        let json = serde_json::to_value(&hosted).unwrap();
+        assert!(json.get("pid").is_none() && json.get("upload").is_none());
+    }
 }

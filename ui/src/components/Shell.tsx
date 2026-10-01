@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { StatusDot } from "@/components/ui/primitives";
 import { ApiError, health, onUnauthorized } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
+import type { Health } from "@/lib/types";
 import { cx, fmtInt } from "@/lib/format";
 
 export function Mark({ size = 20 }: { size?: number }) {
@@ -57,10 +58,10 @@ export function Shell({ children, route }: { children: ReactNode; route: string 
           <div className="mono flex items-center gap-3 text-[11px] text-fg-3">
             {h.status === "ok" ? (
               <>
-                <span className="hidden sm:inline">gsd {h.data.version}</span>
+                <span className="hidden sm:inline">{h.data.deployment === "hosted" ? "Ground Station" : "gsd"} {h.data.version}</span>
                 <span className="hidden text-fg-4 sm:inline">·</span>
                 <span className="hidden sm:inline">{fmtInt(h.data.events)} events</span>
-                <span className="flex items-center gap-1.5 text-ok"><StatusDot status="ok" /> {h.data.upload.endpoint ? "cloud" : "local-only"}</span>
+                <Connection data={h.data} />
               </>
             ) : (
               <span className="flex items-center gap-1.5"><StatusDot status="idle" /> connecting…</span>
@@ -80,6 +81,24 @@ export function Empty({ title, body }: { title: string; body: ReactNode }) {
       <div className="mx-auto mt-2 max-w-[460px] text-[12.5px] leading-[1.55] text-fg-3">{body}</div>
     </div>
   );
+}
+
+/** Where the data lives, and whether uploads are failing. */
+function Connection({ data }: { data: Health }) {
+  if (data.deployment === "hosted") {
+    return <span className="flex items-center gap-1.5 text-ok"><StatusDot status="ok" /> hosted</span>;
+  }
+  const up = data.upload;
+  if (up?.last_error) {
+    const err = up.last_error;
+    const at = new Date(err.at).toLocaleTimeString([], { hour12: false });
+    return (
+      <span className="flex items-center gap-1.5 text-warn" title={`Last upload failed at ${at}: ${err.message}`}>
+        <StatusDot status="warn" /> upload failing<span className="hidden md:inline"> · {fmtInt(up.pending)} pending</span>
+      </span>
+    );
+  }
+  return <span className="flex items-center gap-1.5 text-ok"><StatusDot status="ok" /> {up?.mode === "cloud" ? "cloud" : "local-only"}</span>;
 }
 
 /** Full-page screen for states where the app has nothing to show. */

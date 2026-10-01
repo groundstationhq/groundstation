@@ -9,13 +9,14 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use chrono::Utc;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use groundstation_api::IngestResponse;
+use groundstation_api::{IngestResponse, UploadError};
 use groundstation_schema::{Batch, Event};
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
@@ -30,8 +31,42 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 /// Refusals an event gets before it leaves the upload queue.
 pub const MAX_ATTEMPTS: i64 = 3;
 
+/// The most recent upload failure, cleared by the next success. Shared with
+/// the HTTP server so `/v1/health` can say why events are piling up.
+#[derive(Clone, Default)]
+pub struct UploadState(Arc<Mutex<Option<UploadError>>>);
+
+impl UploadState {
+    pub fn last_error(&self) -> Option<UploadError> {
+        self.lock().clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<UploadError>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn record(&self, result: &Result<usize, Failure>) {
+        match result {
+            Ok(_) => *self.lock() = None,
+            Err(Failure::Transient { error, .. }) => {
+                *self.lock() = Some(UploadError {
+                    message: format!("{error:#}"),
+                    at: Utc::now(),
+                })
+            }
+            // Handled by splitting the batch; not a failure anyone needs to see.
+            Err(Failure::TooLarge) => {}
+        }
+    }
+}
+
 /// Uploads until shutdown. Returns immediately in `local-only` mode.
-pub async fn run(config: Arc<Config>, store: Arc<Store>, mut shutdown: watch::Receiver<bool>) {
+pub async fn run(
+    config: Arc<Config>,
+    store: Arc<Store>,
+    state: UploadState,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let Some(endpoint) = config.upload_endpoint() else {
         return;
     };
@@ -57,7 +92,9 @@ pub async fn run(config: Arc<Config>, store: Arc<Store>, mut shutdown: watch::Re
     tracing::info!(%url, "uploading events");
 
     loop {
-        let wait = match flush(&client, &url, token, &store, limit).await {
+        let result = flush(&client, &url, token, &store, limit).await;
+        state.record(&result);
+        let wait = match result {
             Ok(sent) => {
                 backoff = interval;
                 let full = sent == limit;
@@ -371,6 +408,24 @@ mod tests {
         }
         let counts = store.counts().unwrap();
         assert_eq!((counts.pending_upload, counts.dropped_upload), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn remembers_the_last_failure_until_an_upload_succeeds() {
+        let (url, _) = backend(|_| StatusCode::UNAUTHORIZED.into_response()).await;
+        let (store, _) = store_with(1);
+        let client = reqwest::Client::new();
+        let state = UploadState::default();
+
+        state.record(&flush(&client, &url, None, &store, 10).await);
+        let error = state.last_error().expect("a failure is recorded");
+        assert!(error.message.contains("401"), "{}", error.message);
+
+        // Splitting a batch isn't a failure; it leaves the last error alone.
+        state.record(&Err(Failure::TooLarge));
+        assert!(state.last_error().is_some());
+        state.record(&Ok(1));
+        assert_eq!(state.last_error(), None);
     }
 
     #[tokio::test]

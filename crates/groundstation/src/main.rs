@@ -495,6 +495,13 @@ fn opencode_version() -> Result<Option<String>> {
 
 /// Adapters this CLI can connect that the running gsd doesn't know: it
 /// predates them and must be restarted to accept their hooks.
+/// The daemon's pid for messages; gsd always reports it.
+fn pid(health: &groundstation_api::Health) -> String {
+    health
+        .pid
+        .map_or_else(|| "unknown".into(), |p| p.to_string())
+}
+
 fn missing_adapters(health: &groundstation_api::Health) -> Vec<&'static str> {
     AgentName::value_variants()
         .iter()
@@ -514,7 +521,7 @@ async fn ensure_daemon_for(
     {
         println!(
             "gsd (pid {}) predates {} support; restarting it.",
-            health.pid,
+            pid(&health),
             agent.title()
         );
         stop_daemon(config).await?;
@@ -527,7 +534,8 @@ async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<Exi
     if let Ok(health) = client.health().await {
         println!(
             "gsd is already running (pid {}) on {}",
-            health.pid, config.daemon.listen
+            pid(&health),
+            config.daemon.listen
         );
         let missing = missing_adapters(&health);
         if !missing.is_empty() {
@@ -571,7 +579,8 @@ async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<Exi
         if let Ok(health) = client.health().await {
             println!(
                 "gsd started (pid {}) on {}",
-                health.pid, config.daemon.listen
+                pid(&health),
+                config.daemon.listen
             );
             println!("  logs  {}", render::tilde(&log_path.to_string_lossy()));
             return Ok(ExitCode::SUCCESS);
@@ -769,7 +778,9 @@ async fn status(config: &Config) -> Result<ExitCode> {
     };
     println!(
         "gsd {} running (pid {}) on {}",
-        health.version, health.pid, config.daemon.listen
+        health.version,
+        pid(&health),
+        config.daemon.listen
     );
     if health.version != update::CURRENT {
         println!(
@@ -788,27 +799,35 @@ async fn status(config: &Config) -> Result<ExitCode> {
     if health.ui {
         println!("  ui        {}/", config.base_url());
     }
-    println!("  data      {}", render::tilde(&health.data_dir));
+    if let Some(dir) = &health.data_dir {
+        println!("  data      {}", render::tilde(dir));
+    }
     println!(
         "  stored    {} trajectories, {} events",
         health.trajectories, health.events
     );
-    println!("  spool     {} pending", health.spool_pending);
-    match health.upload.endpoint {
+    if let Some(n) = health.spool_pending {
+        println!("  spool     {n} pending");
+    }
+    let Some(upload) = &health.upload else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    match &upload.endpoint {
         Some(endpoint) => {
-            let dropped = match health.upload.dropped {
+            let dropped = match upload.dropped {
                 0 => String::new(),
                 n => format!(", {n} dropped after repeated refusal"),
             };
             println!(
                 "  transport {} → {endpoint} ({} pending{dropped})",
-                health.upload.mode, health.upload.pending
-            )
+                upload.mode, upload.pending
+            );
+            if let Some(e) = &upload.last_error {
+                let at = e.at.with_timezone(&chrono::Local).format("%H:%M:%S");
+                println!("  ⚠ last upload failed at {at}: {}", e.message);
+            }
         }
-        None => println!(
-            "  transport {} (nothing leaves this machine)",
-            health.upload.mode
-        ),
+        None => println!("  transport {} (nothing leaves this machine)", upload.mode),
     }
     Ok(ExitCode::SUCCESS)
 }

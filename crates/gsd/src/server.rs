@@ -15,8 +15,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use groundstation_api::{
-    ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, ToolStats, TrajectoryDetail,
-    TrajectorySummary, UploadStatus,
+    Deployment, ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, ToolStats,
+    TrajectoryDetail, TrajectorySummary, UploadStatus,
 };
 use groundstation_schema::{Batch, SCHEMA};
 use serde::Deserialize;
@@ -25,11 +25,13 @@ use tokio::sync::watch;
 use crate::config::Config;
 use crate::ingest::Ingestor;
 use crate::store::Resolved;
+use crate::uploader::UploadState;
 
 #[derive(Clone)]
 pub struct AppState {
     pub ingestor: Arc<Ingestor>,
     pub config: Arc<Config>,
+    pub upload: UploadState,
     pub shutdown: watch::Sender<bool>,
 }
 
@@ -79,6 +81,8 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
     let counts = blocking(move || store.counts()).await?;
     Ok(Json(Health {
         status: "ok".into(),
+        deployment: Deployment::Local,
+        features: Vec::new(),
         ui: crate::ui::EMBEDDED,
         adapters: s
             .ingestor
@@ -88,17 +92,18 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
             .collect(),
         version: env!("CARGO_PKG_VERSION").into(),
         schema: SCHEMA.into(),
-        pid: std::process::id(),
-        data_dir: s.config.data_dir().display().to_string(),
         trajectories: counts.trajectories,
         events: counts.events,
-        spool_pending: crate::spool::pending(&s.config.spool_dir()).len(),
-        upload: UploadStatus {
+        pid: Some(std::process::id()),
+        data_dir: Some(s.config.data_dir().display().to_string()),
+        spool_pending: Some(crate::spool::pending(&s.config.spool_dir()).len()),
+        upload: Some(UploadStatus {
             mode: s.config.transport.mode.as_str().into(),
             endpoint: s.config.upload_endpoint().map(String::from),
             pending: counts.pending_upload,
             dropped: counts.dropped_upload,
-        },
+            last_error: s.upload.last_error(),
+        }),
     }))
 }
 
@@ -267,6 +272,7 @@ mod tests {
         router(AppState {
             ingestor,
             config: Arc::new(Config::default()),
+            upload: UploadState::default(),
             shutdown,
         })
     }
@@ -293,6 +299,17 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn health_describes_this_daemon() {
+        let (status, body) = call(&app(), "GET", "/v1/health", "127.0.0.1:4318", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["deployment"], "local");
+        assert_eq!(body["features"], json!([]));
+        assert_eq!(body["pid"], std::process::id());
+        assert_eq!(body["upload"]["mode"], "local-only");
+        assert!(body["upload"].get("last_error").is_none());
     }
 
     #[tokio::test]
