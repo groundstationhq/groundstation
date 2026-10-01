@@ -286,7 +286,7 @@ function Charts({ rows }: { rows: TrajectorySummary[] }) {
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <DurationChart rows={rows} />
       <CacheTrend rows={rows} />
-      <ToolLatencyChart stats={stats.status === "ok" ? stats.data.data : null} error={stats.status === "error" ? stats.error : undefined} />
+      <ToolLatencyChart stats={stats.status === "ok" ? stats.data : null} error={stats.status === "error" ? stats.error : undefined} />
       <CostChart rows={rows} />
     </div>
   );
@@ -341,7 +341,7 @@ function Where({ rows }: { rows: TrajectorySummary[] }) {
 
 export function Overview() {
   const st = useAsync((s) => trajectories(1000, s), [], 5_000);
-  const rows = useMemo(() => (st.status === "ok" ? st.data.data : []), [st]);
+  const rows = useMemo(() => (st.status === "ok" ? st.data : []), [st]);
   const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error") return <Empty title="Couldn't reach the daemon" body={st.error} />;
@@ -352,7 +352,7 @@ export function Overview() {
           <h1 className="text-[18px] font-semibold tracking-tight text-fg">Overview</h1>
           <p className="mt-0.5 text-[12.5px] text-fg-3">What every agent on this machine is doing, and what it's costing.</p>
         </div>
-        <div className="mono text-[11px] text-fg-4">{st.data.source === "demo" ? "demo data" : "live · updates every 5s"} · <span className="text-agent">preview</span> = mocked until v2</div>
+        <div className="mono text-[11px] text-fg-4">live · updates every 5s · <span className="text-agent">preview</span> = mocked until v2</div>
       </div>
       <Strip rows={rows} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">

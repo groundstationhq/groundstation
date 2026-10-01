@@ -380,7 +380,7 @@ export function Trajectory({ id }: { id: string }) {
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [order, setOrder] = useState<Order>("newest");
-  const data = st.status === "ok" ? st.data.data : null;
+  const data = st.status === "ok" ? st.data : null;
   const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
   const counts = useMemo(() => filterCounts(rows), [rows]);
   const filtering: Filtering = { filter, onFilter: setFilter };

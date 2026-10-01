@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { StatusDot } from "@/components/ui/primitives";
-import { health } from "@/lib/api";
+import { ApiError, health, onUnauthorized } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
 import { cx, fmtInt } from "@/lib/format";
 
@@ -24,8 +24,13 @@ const NAV = [
 ];
 
 export function Shell({ children, route }: { children: ReactNode; route: string }) {
-  const h = useAsync((s) => health(s), [], 10_000);
-  const demo = h.status === "ok" && h.data.source === "demo";
+  const [attempt, setAttempt] = useState(0);
+  const [signedOut, setSignedOut] = useState(false);
+  useEffect(() => onUnauthorized(() => setSignedOut(true)), []);
+  const h = useAsync((s) => health(s), [attempt], 10_000);
+
+  if (signedOut) return <SignIn />;
+  if (h.status === "error") return <Unreachable cause={h.cause} onRetry={() => setAttempt((n) => n + 1)} />;
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur-md">
@@ -51,25 +56,19 @@ export function Shell({ children, route }: { children: ReactNode; route: string 
           </div>
           <div className="mono flex items-center gap-3 text-[11px] text-fg-3">
             {h.status === "ok" ? (
-              demo ? (
-                <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-warn">
-                  <StatusDot status="warn" /> demo data<span className="hidden md:inline"> · no gsd on 127.0.0.1:4318</span>
-                </span>
-              ) : (
-                <>
-                  <span className="hidden sm:inline">gsd {h.data.data.version}</span>
-                  <span className="hidden text-fg-4 sm:inline">·</span>
-                  <span className="hidden sm:inline">{fmtInt(h.data.data.events)} events</span>
-                  <span className="flex items-center gap-1.5 text-ok"><StatusDot status="ok" /> {h.data.data.upload.endpoint ? "cloud" : "local-only"}</span>
-                </>
-              )
+              <>
+                <span className="hidden sm:inline">gsd {h.data.version}</span>
+                <span className="hidden text-fg-4 sm:inline">·</span>
+                <span className="hidden sm:inline">{fmtInt(h.data.events)} events</span>
+                <span className="flex items-center gap-1.5 text-ok"><StatusDot status="ok" /> {h.data.upload.endpoint ? "cloud" : "local-only"}</span>
+              </>
             ) : (
               <span className="flex items-center gap-1.5"><StatusDot status="idle" /> connecting…</span>
             )}
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">{children}</main>
+      <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">{h.status === "ok" ? children : <div className="label py-20 text-center">loading…</div>}</main>
     </div>
   );
 }
@@ -80,5 +79,55 @@ export function Empty({ title, body }: { title: string; body: ReactNode }) {
       <div className="text-[14px] text-fg">{title}</div>
       <div className="mx-auto mt-2 max-w-[460px] text-[12.5px] leading-[1.55] text-fg-3">{body}</div>
     </div>
+  );
+}
+
+/** Full-page screen for states where the app has nothing to show. */
+function Gate({ children }: { children: ReactNode }) {
+  return (
+    <main className="flex min-h-dvh items-center justify-center px-4">
+      <div className="w-full max-w-[420px] text-center">
+        <div className="flex justify-center"><Mark size={32} /></div>
+        {children}
+      </div>
+    </main>
+  );
+}
+
+const ACTION = "inline-flex items-center rounded-md border border-line-2 bg-bg-2 px-3 py-1.5 text-[12.5px] text-fg transition-colors hover:bg-bg-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-model";
+
+function SignIn() {
+  return (
+    <Gate>
+      <h1 className="mt-5 text-[17px] font-semibold tracking-tight text-fg">Sign in to Ground Station</h1>
+      <p className="mt-2 text-[13px] leading-[1.55] text-fg-3">You're signed out, or your session expired.</p>
+      <div className="mt-6"><a href="/auth/login" className={ACTION}>Sign in</a></div>
+    </Gate>
+  );
+}
+
+function Unreachable({ cause, onRetry }: { cause: unknown; onRetry: () => void }) {
+  const status = cause instanceof ApiError ? cause.status : null;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return (
+    <Gate>
+      {status === null ? (
+        <>
+          <h1 className="mt-5 text-[17px] font-semibold tracking-tight text-fg">Can't reach gsd</h1>
+          <p className="mt-2 text-[13px] leading-[1.55] text-fg-3">
+            Nothing answered at <span className="mono text-fg-2">{location.host}</span>. Start the daemon with <span className="mono text-fg-2">groundstation daemon start</span>, then retry.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1 className="mt-5 text-[17px] font-semibold tracking-tight text-fg">The API returned an error</h1>
+          <p className="mt-2 text-[13px] leading-[1.55] text-fg-3">
+            <span className="mono text-err">HTTP {status}</span> · {message}
+          </p>
+        </>
+      )}
+      <div className="mt-6"><button type="button" onClick={onRetry} className={ACTION}>Retry</button></div>
+      <p className="mono mt-3 text-[11px] text-fg-4">retrying every 10s</p>
+    </Gate>
   );
 }
