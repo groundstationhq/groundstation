@@ -132,6 +132,8 @@ export interface TrajectorySummary {
   cwd: string | null;
   repository: string | null;
   branch: string | null;
+  /** Git commit checked out when the trajectory started. */
+  revision: string | null;
   host: string | null;
   started_at: string;
   updated_at: string;

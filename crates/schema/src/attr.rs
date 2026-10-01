@@ -28,6 +28,16 @@ pub const PERMISSION_MODE: &str = "gs.permission_mode";
 pub const TRANSCRIPT_PATH: &str = "gs.transcript.path";
 pub const SIDECHAIN: &str = "gs.sidechain";
 
+// Where a trajectory ran. gsd learns these from the machine and a git lookup
+// rather than from the agent, keeps them on the trajectory, and adds them to
+// each event it uploads.
+pub const HOST_NAME: &str = "gs.host.name";
+/// The repository's top-level directory: a path, subject to `[redaction] paths`.
+pub const VCS_REPOSITORY: &str = "gs.vcs.repository";
+pub const VCS_BRANCH: &str = "gs.vcs.branch";
+/// The commit checked out when the trajectory started.
+pub const VCS_REVISION: &str = "gs.vcs.revision";
+
 // Turns.
 pub const PROMPT_TEXT: &str = "gs.prompt.text";
 pub const PROMPT_BYTES: &str = "gs.prompt.bytes";
@@ -90,7 +100,7 @@ pub const CONTENT: &[&str] = &[
 ];
 
 /// Attributes holding local filesystem paths.
-pub const PATHS: &[&str] = &[CWD, FILE_PATH, TRANSCRIPT_PATH];
+pub const PATHS: &[&str] = &[CWD, FILE_PATH, TRANSCRIPT_PATH, VCS_REPOSITORY];
 
 /// Keys inside a tool's input body that hold filesystem paths.
 pub const TOOL_INPUT_PATH_KEYS: &[&str] = &["file_path", "notebook_path", "path", "cwd"];

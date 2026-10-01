@@ -98,6 +98,9 @@ pub struct TrajectorySummary {
     pub cwd: Option<String>,
     pub repository: Option<String>,
     pub branch: Option<String>,
+    /// The commit checked out when the trajectory started.
+    #[serde(default)]
+    pub revision: Option<String>,
     pub host: Option<String>,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

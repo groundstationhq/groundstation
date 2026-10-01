@@ -81,12 +81,14 @@ pub fn trajectory(detail: &TrajectoryDetail) -> String {
         .unwrap_or_default();
     let _ = writeln!(out, "{}  {}{}  {}", t.id, t.agent, version, t.status);
     if let Some(place) = t.repository.as_deref().or(t.cwd.as_deref()) {
-        let branch = t
-            .branch
-            .as_deref()
-            .map(|b| format!(" ({b})"))
-            .unwrap_or_default();
-        let _ = writeln!(out, "{}{}", tilde(place), branch);
+        let revision = t.revision.as_deref().map(|r| r.get(..7).unwrap_or(r));
+        let checkout = match (t.branch.as_deref(), revision) {
+            (Some(b), Some(r)) => format!(" ({b} @ {r})"),
+            (Some(b), None) => format!(" ({b})"),
+            (None, Some(r)) => format!(" (@ {r})"),
+            (None, None) => String::new(),
+        };
+        let _ = writeln!(out, "{}{}", tilde(place), checkout);
     }
     let _ = writeln!(
         out,

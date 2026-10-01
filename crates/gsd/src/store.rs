@@ -67,6 +67,8 @@ CREATE TABLE transcripts (
     // Upload bookkeeping: `uploaded` is 0 while queued, 1 once accepted, 2 once
     // dropped after repeated rejection.
     "ALTER TABLE events ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0;",
+    // The commit a trajectory started on.
+    "ALTER TABLE trajectories ADD COLUMN revision TEXT;",
 ];
 
 pub struct Store {
@@ -217,11 +219,13 @@ impl Store {
         id: &str,
         repository: Option<&str>,
         branch: Option<&str>,
+        revision: Option<&str>,
     ) -> Result<()> {
         self.conn().execute(
-            "UPDATE trajectories SET repository = COALESCE(?2, repository), branch = COALESCE(?3, branch)
+            "UPDATE trajectories SET repository = COALESCE(?2, repository), branch = COALESCE(?3, branch),
+                                     revision = COALESCE(?4, revision)
              WHERE id = ?1",
-            params![id, repository, branch],
+            params![id, repository, branch, revision],
         )?;
         Ok(())
     }
@@ -359,15 +363,39 @@ impl Store {
         Ok(Some((summary, events)))
     }
 
-    /// Oldest events not yet accepted by the backend, with their sequence numbers.
+    /// Oldest events not yet accepted by the backend, with their sequence
+    /// numbers. Each carries what is known about where its trajectory ran
+    /// (host, repository, branch, revision), which the stored event lacks.
     pub fn pending_upload(&self, limit: usize) -> Result<Vec<(i64, Event)>> {
         let conn = self.conn();
+        let columns = EVENT_COLUMNS
+            .split(", ")
+            .map(|c| format!("e.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT seq, {EVENT_COLUMNS} FROM events WHERE uploaded = 0 ORDER BY seq LIMIT ?1"
+            "SELECT e.seq, {columns}, t.host, t.repository, t.branch, t.revision
+             FROM events e LEFT JOIN trajectories t ON t.id = e.trajectory_id
+             WHERE e.uploaded = 0 ORDER BY e.seq LIMIT ?1"
         ))?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let seq: i64 = row.get(0)?;
-            event_from_row_at(row, 1).map(|r| r.map(|e| (seq, e)))
+            let context = [
+                (attr::HOST_NAME, row.get::<_, Option<String>>(10)?),
+                (attr::VCS_REPOSITORY, row.get(11)?),
+                (attr::VCS_BRANCH, row.get(12)?),
+                (attr::VCS_REVISION, row.get(13)?),
+            ];
+            event_from_row_at(row, 1).map(|r| {
+                r.map(|mut e| {
+                    for (key, value) in context {
+                        if let Some(value) = value {
+                            e.attributes.entry(key).or_insert(Value::String(value));
+                        }
+                    }
+                    (seq, e)
+                })
+            })
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from).and_then(|e| e))
             .collect()
@@ -603,7 +631,8 @@ SELECT t.id, t.agent, t.agent_version, t.title, t.status, t.cwd, t.repository, t
        COALESCE(SUM(json_extract(e.attributes, '$."gen_ai.usage.output_tokens"')), 0),
        COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_read_input_tokens"')), 0),
        COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_creation_input_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gs.cost.usd"')), 0.0)
+       COALESCE(SUM(json_extract(e.attributes, '$."gs.cost.usd"')), 0.0),
+       t.revision
 FROM trajectories t LEFT JOIN events e ON e.trajectory_id = t.id
 "#;
 
@@ -620,6 +649,7 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<TrajectorySummary> {
         cwd: r.get(5)?,
         repository: r.get(6)?,
         branch: r.get(7)?,
+        revision: r.get(22)?,
         host: r.get(8)?,
         started_at: from_ns(started),
         updated_at: from_ns(updated),
@@ -751,6 +781,39 @@ mod tests {
             .find(|e| e.kind == EventKind::ToolFailed)
             .unwrap();
         assert_eq!(failed.get(attr::DURATION_MS), Some(&Value::from(47_193)));
+    }
+
+    #[test]
+    fn uploads_carry_where_the_trajectory_ran() {
+        let store = Store::open_in_memory().unwrap();
+        let t0 = Utc::now();
+        let mut tagged = ev("a", EventKind::ToolStarted, t0);
+        tagged.set(attr::VCS_BRANCH, "from-the-agent");
+        store
+            .insert(vec![new(ev("a", EventKind::AgentStarted, t0)), new(tagged)])
+            .unwrap();
+        store
+            .set_repository("a", Some("/src/shop"), Some("main"), Some("3f2a9c1"))
+            .unwrap();
+
+        let pending = store.pending_upload(10).unwrap();
+        let first = &pending[0].1;
+        assert_eq!(first.get(attr::HOST_NAME), Some(&Value::from("host-a")));
+        assert_eq!(
+            first.get(attr::VCS_REPOSITORY),
+            Some(&Value::from("/src/shop"))
+        );
+        assert_eq!(first.get(attr::VCS_BRANCH), Some(&Value::from("main")));
+        assert_eq!(first.get(attr::VCS_REVISION), Some(&Value::from("3f2a9c1")));
+        // An event's own value wins over the trajectory's.
+        assert_eq!(
+            pending[1].1.get(attr::VCS_BRANCH),
+            Some(&Value::from("from-the-agent"))
+        );
+        // The stored event is unchanged.
+        let (summary, events) = store.trajectory("a").unwrap().unwrap();
+        assert_eq!(summary.revision.as_deref(), Some("3f2a9c1"));
+        assert_eq!(events[0].get(attr::HOST_NAME), None);
     }
 
     #[test]

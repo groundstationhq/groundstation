@@ -346,7 +346,7 @@ impl Ingestor {
         Ok(stored)
     }
 
-    /// Resolves the git repository and branch of a trajectory's working
+    /// Resolves the git repository, branch and checked-out commit of a trajectory's working
     /// directory, once per trajectory. `cwd` is the unredacted path; the
     /// repository is stored under the path policy like any other path.
     fn enrich_repository(&self, trajectory_id: &str, cwd: &str) {
@@ -368,10 +368,13 @@ impl Ingestor {
         };
         let repository = self.privacy.path(&repository);
         let branch = git(&["branch", "--show-current"]);
-        if let Err(e) =
-            self.store
-                .set_repository(trajectory_id, Some(&repository), branch.as_deref())
-        {
+        let revision = git(&["rev-parse", "HEAD"]);
+        if let Err(e) = self.store.set_repository(
+            trajectory_id,
+            Some(&repository),
+            branch.as_deref(),
+            revision.as_deref(),
+        ) {
             tracing::warn!("storing repository for {trajectory_id}: {e:#}");
         }
     }
