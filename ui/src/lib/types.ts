@@ -58,6 +58,10 @@ export const attr = {
   END_REASON: "gs.end.reason",
   CWD: "gs.cwd",
   PERMISSION_MODE: "gs.permission_mode",
+  HOST_NAME: "gs.host.name",
+  VCS_REPOSITORY: "gs.vcs.repository",
+  VCS_BRANCH: "gs.vcs.branch",
+  VCS_REVISION: "gs.vcs.revision",
   TRANSCRIPT_PATH: "gs.transcript.path",
   SIDECHAIN: "gs.sidechain",
   PROMPT_TEXT: "gs.prompt.text",
@@ -132,6 +136,8 @@ export interface TrajectorySummary {
   cwd: string | null;
   repository: string | null;
   branch: string | null;
+  /** Git commit checked out when the trajectory started. */
+  revision: string | null;
   host: string | null;
   started_at: string;
   updated_at: string;

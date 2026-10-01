@@ -4,7 +4,7 @@ import { Glyph, StatusDot, kindColor } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
 import { trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
+import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, shortRev, tilde } from "@/lib/format";
 import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
 import { attr, cacheHit, promptTokens, type Event, type TrajectoryDetail } from "@/lib/types";
 import { fmtHit, hitCls } from "@/routes/Trajectories";
@@ -258,6 +258,37 @@ function Value({ k, v }: { k: string; v: unknown }) {
   );
 }
 
+function revisionOf(e: Event): string | undefined {
+  const v = e.attributes[attr.VCS_REVISION];
+  return typeof v === "string" ? v : undefined;
+}
+
+/** Rows (in time order) whose commit differs from the row before them. */
+function headMoves(rows: Row[]): Set<string> {
+  const moved = new Set<string>();
+  let prev: string | undefined;
+  for (const r of rows) {
+    const rev = revisionOf(r.open);
+    if (!rev) continue;
+    if (prev && rev !== prev) moved.add(r.id);
+    prev = rev;
+  }
+  return moved;
+}
+
+/** Divider marking where the checked-out commit changed mid-trajectory. */
+function HeadMoved({ row }: { row: Row }) {
+  const rev = revisionOf(row.open) ?? "";
+  const branch = row.open.attributes[attr.VCS_BRANCH];
+  return (
+    <div className="mono flex items-center gap-2 px-3 py-1 text-[10.5px] text-fg-4" role="separator">
+      <span className="h-px flex-1 bg-line" />
+      <span>HEAD moved to <span className="text-fg-3" title={rev}>{shortRev(rev)}</span>{typeof branch === "string" && <> on <span className="text-fg-3">{branch}</span></>}</span>
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 function Inspector({ row }: { row: Row }) {
   const events: Array<[string, Event]> = [["opened", row.open]];
   if (row.close) events.push(["closed", row.close]);
@@ -334,6 +365,7 @@ const STATUS: Record<string, { dot: "running" | "ok" | "err" | "idle"; label: st
 interface Stat { k: string; v: ReactNode }
 
 function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<Filter, number>; filtering: Filtering }) {
+  const commits = new Set(d.events.map((e) => revisionOf(e)).filter(Boolean)).size;
   const s = STATUS[d.status] ?? { dot: "idle" as const, label: d.status, cls: "text-fg-3" };
   const link = (to: Filter, text: string) => <FilterLink to={to} filtering={filtering}>{text}</FilterLink>;
   const stats: Stat[] = [
@@ -360,6 +392,7 @@ function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<
             <span>{d.id}</span><span className="text-fg-4">/</span>
             <span>{d.agent}{d.agent_version ? ` ${d.agent_version}` : ""}</span><span className="text-fg-4">/</span>
             <span>{(d.repository ?? d.cwd) ? tilde((d.repository ?? d.cwd) as string) : "—"}{d.branch ? ` @ ${d.branch}` : ""}</span>
+            {d.revision && <><span className="text-fg-4">/</span><span title={d.revision}>{shortRev(d.revision)}{commits > 1 && <span className="text-fg-4"> · {commits} commits</span>}</span></>}
             {d.host && <><span className="text-fg-4">/</span><span>{d.host}</span></>}
           </div>
         </div>
@@ -389,6 +422,7 @@ export function Trajectory({ id }: { id: string }) {
   const total = Math.max(1, data.duration_ms);
   const maxMs = Math.max(1000, ...rows.map((r) => r.durationMs ?? 0));
   const filtered = applyFilter(rows, filter);
+  const moves = headMoves(filtered);
   const shown = order === "newest" ? [...filtered].reverse() : filtered;
   return (
     <div>
@@ -412,8 +446,10 @@ export function Trajectory({ id }: { id: string }) {
         <ol className="px-1 py-1">
           {shown.map((r) => (
             <li key={r.id}>
+              {order === "oldest" && moves.has(r.id) && <HeadMoved row={r} />}
               <EventRow r={r} maxMs={maxMs} open={open === r.id} onToggle={() => setOpen((o) => (o === r.id ? null : r.id))} />
               <AnimatePresence initial={false}>{open === r.id && (reduced ? <div><Inspector row={r} /></div> : <Inspector row={r} />)}</AnimatePresence>
+              {order === "newest" && moves.has(r.id) && <HeadMoved row={r} />}
             </li>
           ))}
           {shown.length === 0 && <li className="mono px-3 py-6 text-center text-[11.5px] text-fg-4">nothing matches this filter</li>}

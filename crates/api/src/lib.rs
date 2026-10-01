@@ -98,6 +98,10 @@ pub struct TrajectorySummary {
     pub cwd: Option<String>,
     pub repository: Option<String>,
     pub branch: Option<String>,
+    /// The commit checked out at the trajectory's latest event. Each event
+    /// carries its own in `gs.vcs.revision`.
+    #[serde(default)]
+    pub revision: Option<String>,
     pub host: Option<String>,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

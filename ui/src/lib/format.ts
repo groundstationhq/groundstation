@@ -46,3 +46,8 @@ export const cx = (...c: Array<string | false | null | undefined>) => c.filter(B
 export function tilde(path: string): string {
   return path.replace(/^\/(Users|home)\/[^/]+/, "~");
 }
+
+/** A commit hash shortened for display, the way git abbreviates it. */
+export function shortRev(rev: string): string {
+  return rev.slice(0, 7);
+}
