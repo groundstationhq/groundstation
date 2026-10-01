@@ -28,14 +28,15 @@ pub const PERMISSION_MODE: &str = "gs.permission_mode";
 pub const TRANSCRIPT_PATH: &str = "gs.transcript.path";
 pub const SIDECHAIN: &str = "gs.sidechain";
 
-// Where a trajectory ran. gsd learns these from the machine and a git lookup
-// rather than from the agent, keeps them on the trajectory, and adds them to
-// each event it uploads.
+// Where an event happened. gsd learns these from the machine and from git, not
+// from the agent. Host and repository don't change within a trajectory: gsd
+// keeps them on the trajectory and adds them to each event it uploads.
 pub const HOST_NAME: &str = "gs.host.name";
 /// The repository's top-level directory: a path, subject to `[redaction] paths`.
 pub const VCS_REPOSITORY: &str = "gs.vcs.repository";
+// Branch and commit can change mid-trajectory, so each event carries the ones
+// checked out when it happened.
 pub const VCS_BRANCH: &str = "gs.vcs.branch";
-/// The commit checked out when the trajectory started.
 pub const VCS_REVISION: &str = "gs.vcs.revision";
 
 // Turns.

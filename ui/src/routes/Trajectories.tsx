@@ -4,7 +4,7 @@ import { SortToggle, type Order } from "@/components/ui/SortToggle";
 import { Empty } from "@/components/Shell";
 import { trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtDur, fmtInt, fmtTokens, tilde } from "@/lib/format";
+import { cx, fmtDur, fmtInt, fmtTokens, shortRev, tilde } from "@/lib/format";
 import { cacheHit, promptTokens, totalTokens, type TrajectorySummary } from "@/lib/types";
 
 function ago(iso: string): string {
@@ -142,7 +142,7 @@ export function Trajectories() {
                     </td>
                     <td className={cx("mono px-3 py-2.5 text-[12px] text-fg-2", COLS[2][1])}>
                       {(r.repository ?? r.cwd) ? tilde((r.repository ?? r.cwd) as string) : "—"}
-                      {r.branch && <div className="text-[10.5px] text-fg-4">{r.branch}</div>}
+                      {(r.branch || r.revision) && <div className="text-[10.5px] text-fg-4">{[r.branch, r.revision && shortRev(r.revision)].filter(Boolean).join(" @ ")}</div>}
                     </td>
                     <td className={cx("mono whitespace-nowrap px-3 py-2.5 text-[12px] text-fg-3", COLS[3][1])}>{ago(r.started_at)}</td>
                     <td className={cx("mono px-3 py-2.5 text-right text-[12.5px]", r.status === "running" ? "text-model" : "text-fg")}>{fmtDur(r.duration_ms)}</td>

@@ -136,8 +136,9 @@ impl Store {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Inserts events in order, filling in span durations and trajectory
-    /// metadata. Returns how many events were new or changed.
+    /// Inserts events in order, filling in span durations, the checkout of
+    /// events that arrive without one, and trajectory metadata. Returns how
+    /// many events were new or changed.
     pub fn insert(&self, events: Vec<NewEvent>) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -150,6 +151,9 @@ impl Store {
         } in events
         {
             let ts = ns(event.timestamp);
+            if event.get(attr::VCS_REVISION).is_none() {
+                fill_checkout(&tx, &mut event, ts)?;
+            }
             if event.kind.ends_span()
                 && event.get(attr::DURATION_MS).is_none()
                 && let Some(span) = &event.span_id
@@ -214,18 +218,10 @@ impl Store {
         Ok(changed == 1)
     }
 
-    pub fn set_repository(
-        &self,
-        id: &str,
-        repository: Option<&str>,
-        branch: Option<&str>,
-        revision: Option<&str>,
-    ) -> Result<()> {
+    pub fn set_repository(&self, id: &str, repository: &str) -> Result<()> {
         self.conn().execute(
-            "UPDATE trajectories SET repository = COALESCE(?2, repository), branch = COALESCE(?3, branch),
-                                     revision = COALESCE(?4, revision)
-             WHERE id = ?1",
-            params![id, repository, branch, revision],
+            "UPDATE trajectories SET repository = ?2 WHERE id = ?1",
+            params![id, repository],
         )?;
         Ok(())
     }
@@ -364,8 +360,8 @@ impl Store {
     }
 
     /// Oldest events not yet accepted by the backend, with their sequence
-    /// numbers. Each carries what is known about where its trajectory ran
-    /// (host, repository, branch, revision), which the stored event lacks.
+    /// numbers. Each also carries its trajectory's host and repository, which
+    /// the stored event lacks.
     pub fn pending_upload(&self, limit: usize) -> Result<Vec<(i64, Event)>> {
         let conn = self.conn();
         let columns = EVENT_COLUMNS
@@ -374,7 +370,7 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT e.seq, {columns}, t.host, t.repository, t.branch, t.revision
+            "SELECT e.seq, {columns}, t.host, t.repository
              FROM events e LEFT JOIN trajectories t ON t.id = e.trajectory_id
              WHERE e.uploaded = 0 ORDER BY e.seq LIMIT ?1"
         ))?;
@@ -383,8 +379,6 @@ impl Store {
             let context = [
                 (attr::HOST_NAME, row.get::<_, Option<String>>(10)?),
                 (attr::VCS_REPOSITORY, row.get(11)?),
-                (attr::VCS_BRANCH, row.get(12)?),
-                (attr::VCS_REVISION, row.get(13)?),
             ];
             event_from_row_at(row, 1).map(|r| {
                 r.map(|mut e| {
@@ -569,6 +563,8 @@ fn upsert_trajectory(
         _ => None,
     };
     let cwd = event.get(attr::CWD).and_then(Value::as_str);
+    let branch = event.get(attr::VCS_BRANCH).and_then(Value::as_str);
+    let revision = event.get(attr::VCS_REVISION).and_then(Value::as_str);
 
     tx.execute(
         "INSERT INTO trajectories (id, agent, status, started_ns, updated_ns)
@@ -590,7 +586,9 @@ fn upsert_trajectory(
              agent_version = COALESCE(?5, agent_version),
              title = COALESCE(title, ?6),
              cwd = COALESCE(cwd, ?7),
-             host = COALESCE(host, ?8)
+             host = COALESCE(host, ?8),
+             branch = CASE WHEN ?9 IS NOT NULL AND ?3 >= updated_ns THEN ?9 ELSE COALESCE(branch, ?9) END,
+             revision = CASE WHEN ?10 IS NOT NULL AND ?3 >= updated_ns THEN ?10 ELSE COALESCE(revision, ?10) END
          WHERE id = ?1",
         params![
             event.trajectory_id,
@@ -600,9 +598,55 @@ fn upsert_trajectory(
             event.agent.version,
             title,
             cwd,
-            host
+            host,
+            branch,
+            revision
         ],
     )?;
+    Ok(())
+}
+
+/// Gives an event that arrived without a checkout (a model call read from a
+/// transcript after the fact) the commit and branch of the latest event before
+/// it in the trajectory. Deterministic, so re-reading a transcript doesn't
+/// change stored events.
+fn fill_checkout(tx: &rusqlite::Transaction<'_>, event: &mut Event, ts: i64) -> Result<()> {
+    // Trajectories that never ran in a repository have nothing to inherit;
+    // don't scan their events.
+    let has_checkout: bool = tx
+        .query_row(
+            "SELECT revision IS NOT NULL FROM trajectories WHERE id = ?1",
+            params![event.trajectory_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !has_checkout {
+        return Ok(());
+    }
+    let prior: Option<(String, Option<String>)> = tx
+        .query_row(
+            &format!(
+                "SELECT json_extract(attributes, '$.\"{rev}\"'), json_extract(attributes, '$.\"{branch}\"')
+                 FROM events
+                 WHERE trajectory_id = ?1 AND ts_ns <= ?2
+                   AND json_extract(attributes, '$.\"{rev}\"') IS NOT NULL
+                 ORDER BY ts_ns DESC, seq DESC LIMIT 1",
+                rev = attr::VCS_REVISION,
+                branch = attr::VCS_BRANCH,
+            ),
+            params![event.trajectory_id, ts],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((revision, branch)) = prior {
+        event.set(attr::VCS_REVISION, revision);
+        if let Some(branch) = branch
+            && event.get(attr::VCS_BRANCH).is_none()
+        {
+            event.set(attr::VCS_BRANCH, branch);
+        }
+    }
     Ok(())
 }
 
@@ -784,36 +828,76 @@ mod tests {
     }
 
     #[test]
-    fn uploads_carry_where_the_trajectory_ran() {
+    fn uploads_carry_host_and_repository() {
         let store = Store::open_in_memory().unwrap();
-        let t0 = Utc::now();
-        let mut tagged = ev("a", EventKind::ToolStarted, t0);
-        tagged.set(attr::VCS_BRANCH, "from-the-agent");
         store
-            .insert(vec![new(ev("a", EventKind::AgentStarted, t0)), new(tagged)])
+            .insert(vec![new(ev("a", EventKind::AgentStarted, Utc::now()))])
             .unwrap();
-        store
-            .set_repository("a", Some("/src/shop"), Some("main"), Some("3f2a9c1"))
-            .unwrap();
+        store.set_repository("a", "/src/shop").unwrap();
 
         let pending = store.pending_upload(10).unwrap();
-        let first = &pending[0].1;
-        assert_eq!(first.get(attr::HOST_NAME), Some(&Value::from("host-a")));
+        let event = &pending[0].1;
+        assert_eq!(event.get(attr::HOST_NAME), Some(&Value::from("host-a")));
         assert_eq!(
-            first.get(attr::VCS_REPOSITORY),
+            event.get(attr::VCS_REPOSITORY),
             Some(&Value::from("/src/shop"))
         );
-        assert_eq!(first.get(attr::VCS_BRANCH), Some(&Value::from("main")));
-        assert_eq!(first.get(attr::VCS_REVISION), Some(&Value::from("3f2a9c1")));
-        // An event's own value wins over the trajectory's.
-        assert_eq!(
-            pending[1].1.get(attr::VCS_BRANCH),
-            Some(&Value::from("from-the-agent"))
-        );
         // The stored event is unchanged.
-        let (summary, events) = store.trajectory("a").unwrap().unwrap();
-        assert_eq!(summary.revision.as_deref(), Some("3f2a9c1"));
+        let (_, events) = store.trajectory("a").unwrap().unwrap();
         assert_eq!(events[0].get(attr::HOST_NAME), None);
+    }
+
+    #[test]
+    fn checkout_follows_the_timeline() {
+        let store = Store::open_in_memory().unwrap();
+        let t0 = Utc::now();
+        let at = |s: i64, kind, rev: Option<&str>| {
+            let mut e = ev("a", kind, t0 + Duration::seconds(s));
+            if let Some(rev) = rev {
+                e.set(attr::VCS_REVISION, rev);
+                e.set(attr::VCS_BRANCH, "main");
+            }
+            new(e)
+        };
+        store
+            .insert(vec![
+                at(0, EventKind::AgentStarted, Some("aaa")),
+                at(10, EventKind::TurnUser, Some("bbb")),
+            ])
+            .unwrap();
+        // Model calls read from a transcript later take the checkout in
+        // effect at their timestamp.
+        store
+            .insert(vec![
+                at(5, EventKind::ModelCompleted, None),
+                at(15, EventKind::ModelCompleted, None),
+            ])
+            .unwrap();
+        let (summary, events) = store.trajectory("a").unwrap().unwrap();
+        let revisions: Vec<_> = events
+            .iter()
+            .map(|e| e.get(attr::VCS_REVISION).and_then(Value::as_str).unwrap())
+            .collect();
+        assert_eq!(revisions, ["aaa", "aaa", "bbb", "bbb"]);
+        assert_eq!(events[1].get(attr::VCS_BRANCH), Some(&Value::from("main")));
+        // The trajectory shows the latest checkout; a late event doesn't rewind it.
+        assert_eq!(summary.revision.as_deref(), Some("bbb"));
+        store
+            .insert(vec![at(1, EventKind::ToolStarted, Some("old"))])
+            .unwrap();
+        let (summary, _) = store.trajectory("a").unwrap().unwrap();
+        assert_eq!(summary.revision.as_deref(), Some("bbb"));
+    }
+
+    #[test]
+    fn trajectories_outside_a_repository_inherit_nothing() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert(vec![new(ev("a", EventKind::ModelCompleted, Utc::now()))])
+            .unwrap();
+        let (summary, events) = store.trajectory("a").unwrap().unwrap();
+        assert_eq!(summary.revision, None);
+        assert_eq!(events[0].get(attr::VCS_REVISION), None);
     }
 
     #[test]
