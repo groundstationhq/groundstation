@@ -2,10 +2,10 @@
 
 | | |
 |:--|:--|
-| Status | Draft. §11.1, §11.2, §11.4 and most of §11.5 are implemented. |
+| Status | Draft. §11 is implemented except the insights view and `groundstation cloud login`. |
 | Date | 2026-09-29, revised 2026-09-30 |
 | Author | akiokio |
-| Scope | The hosted backend: ingest, storage, insights and the hosted `/v1` API. Changes this requires in `gsd`, `crates/schema` and `ui/`. |
+| Scope | The backend: ingest, storage, insights and the hosted `/v1` API. We run it as the hosted service, and anyone can self-host it. Changes this requires in `gsd`, `crates/schema` and `ui/`. |
 
 ## 1. Summary
 
@@ -22,6 +22,8 @@ Four services and two databases:
 
 The design keeps one promise from `AGENTS.md`: the hosted UI is the same build as the local one, talking to the same API contract. The SaaS version is a change of host, not a rewrite.
 
+The backend is open source and lives in this repository. We run it as the hosted service, and anyone can run the same code on their own infrastructure (§16). The core is open; a small set of enterprise features lives in `ee/` under a commercial license, and the hosted service and those features are how Ground Station makes money (§17).
+
 ## 2. Context
 
 What exists today, and constrains this design:
@@ -31,7 +33,7 @@ What exists today, and constrains this design:
 - **Event ids are stable.** They are derived from the hook invocation or the transcript message id. The same event is redelivered with the same id.
 - **Some events change.** `model.completed` events are re-read from growing transcripts. When their attributes change, `gsd` updates the row and resets `uploaded = 0`, so the same event id is uploaded again with newer content. Every other kind is write-once.
 - **Git checkout is on every event.** Each event records the commit and branch checked out when it happened (`gs.vcs.revision`, `gs.vcs.branch`), so a long trajectory that spans commits records each one. The repository doesn't change within a trajectory: it lives on the local `trajectories` table, and the uploader adds its name to each event it sends (§11.1). The hostname never leaves the machine.
-- **The UI.** `ui/src/lib/api.ts` fetches relative paths (`BASE = ""`). When `/v1/health` fails for any reason, it switches to demo fixtures.
+- **The UI.** `ui/src/lib/api.ts` fetches relative paths (`BASE = ""`). A 401 from any `/v1` call shows a sign-in screen linking to `/auth/login`; any other failure of `/v1/health` shows an error screen. There is no demo fallback.
 
 ## 3. Goals and non-goals
 
@@ -42,12 +44,12 @@ Goals:
 3. Produce findings and recommendations from a tenant's events, each linked to the trajectories and events that support it.
 4. Multi-tenant from day one. Isolation is enforced by the server, never trusted from the request.
 5. Never let a cloud outage or a bad batch slow down an agent or silently drop data on the machine.
+6. Self-hostable with the same code we run. One `docker compose up` gives a working backend, and nothing requires a managed service (§16).
 
 Non-goals, for now:
 
 - Streaming or live tail from the cloud. The UI polls, as it does locally.
 - Accepting raw hook payloads in the cloud. Translation stays in `gsd` and the adapters.
-- Self-hosting the backend. The design doesn't prevent it but won't optimize for it.
 - LLM-generated insights. They come later, opt-in per tenant (§9.4).
 
 ## 4. Architecture
@@ -87,7 +89,7 @@ Non-goals, for now:
 
 Routing at the edge: `POST /v1/events` goes to ingest. Everything else goes to api. Ingest and api start as one binary with two route groups and split when their load profiles diverge. The edge routing stays the same either way.
 
-All services are written in Rust. They depend on `groundstation-schema` for `Event`/`Batch` and on the API types (§11.4), so the wire types have exactly one definition.
+All services are written in Rust and live in this repository (§17). They depend on `groundstation-schema` for `Event`/`Batch` and on the API types (§11.4) as path dependencies, so the wire types have exactly one definition and change in the same pull request on both sides.
 
 ## 5. Data flow
 
@@ -312,7 +314,7 @@ Evidence is a list of `{ trajectory_id, event_ids[], note }`, so the UI links ea
 
 ### 8.4 Authentication
 
-- Browser: GitHub OAuth, then an `HttpOnly; Secure; SameSite=Lax` session cookie on the app origin. Because the origin is the same, `fetch` sends it with no change to `api.ts`.
+- Browser: OpenID Connect, then an `HttpOnly; Secure; SameSite=Lax` session cookie on the app origin. Because the origin is the same, `fetch` sends it with no change to `api.ts`. The hosted service offers GitHub and Google sign-in; a self-hosted instance points at any OIDC provider (Okta, Entra ID, Keycloak, Google Workspace) through configuration. A single-user self-hosted instance can skip sign-in by setting an admin password instead. SAML is an enterprise feature (§17).
 - CSRF: the one mutating browser endpoint (`POST /v1/insights/{id}/state`) requires `content-type: application/json`, which a cross-origin form can't send without a preflight, and api answers no preflights. This is the same defense `gsd` uses locally.
 - `gsd`: bearer ingest token, accepted only on `POST /v1/events`. An ingest token can't read anything.
 
@@ -402,7 +404,7 @@ The hosted services need `TrajectorySummary`, `TrajectoryDetail`, `ToolStats`, `
 
 ## 13. Operations
 
-- **Hosting.** Stateless containers for ingest, api and the worker, on whatever container platform we pick. Managed ClickHouse (ClickHouse Cloud) and managed Postgres, so we don't run stateful infrastructure at this stage.
+- **Hosting.** Stateless containers for ingest, api and the worker, on whatever container platform we pick. Managed ClickHouse (ClickHouse Cloud) and managed Postgres, so we don't run stateful infrastructure at this stage. The hosted service runs the same images self-hosters run; nothing in the code depends on the managed providers.
 - **Deploys.** api embeds a pinned `ui/dist` release, the same way `gsd` does. A hosted deploy and a `gsd` release that change the contract ship in the order: backend first (accepting both shapes), then clients.
 - **Metrics.** Per service: request rate, status mix, and p50/p95 latency. For ingest: events accepted and rejected per second, ClickHouse insert latency, and ingest lag (`now − max(received_at)`). For the worker: run duration per detector and findings upserted. For the fleet: `gsd` versions seen, taken from the `user-agent` header.
 - **Alerts.** Ingest 5xx rate, insert latency, and worker runs failing or falling behind.
@@ -413,8 +415,8 @@ The hosted services need `TrajectorySummary`, `TrajectoryDetail`, `ToolStats`, `
 | Milestone | Delivers |
 |:--|:--|
 | M0 | Changes in this repository: §11.1–11.5, the `groundstation-api` crate, and contract tests against `gsd`. Done, except the contract tests. |
-| M1 | ingest, ClickHouse, and api with read parity, single tenant, internal use only; hosted `ui/dist` unmodified |
-| M2 | Tenancy, GitHub login, ingest tokens, retention, `groundstation cloud login`; private beta |
+| M1 | ingest, ClickHouse, and api with read parity, single tenant, internal use only; hosted `ui/dist` unmodified. The `docker compose` setup from §16 is the development environment from day one, so self-hosting works from the first commit. |
+| M2 | Tenancy, OIDC sign-in, ingest tokens, retention, `groundstation cloud login` (which also targets a self-hosted endpoint); self-hosting guide; private beta |
 | M3 | Insights worker with the first detectors, and the insights view in the UI |
 | M4 | Team views across machines and users; opt-in LLM findings |
 
@@ -425,11 +427,43 @@ The hosted services need `TrajectorySummary`, `TrajectoryDetail`, `ToolStats`, `
 - **Postgres only.** Viable for an early product and simpler to run. Rejected because the workload is append-heavy and aggregation-heavy over JSON attributes (percentiles, per-category rollups, cross-trajectory detectors). Moving off Postgres later would cost more than starting on ClickHouse now.
 - **Insights in ClickHouse.** Rejected. Findings are few, mutable, and carry per-user state (dismissed, resolved). That is transactional data.
 - **Building summaries in ingest.** Rejected. It would require read-modify-write on every event, which is exactly what makes redelivery hard. Computing summaries at read time from deduplicated events stays correct under redelivery and updates.
+- **A closed-source backend in a private repository.** Rejected. Ground Station handles prompts and source code, and many teams can't send that to a SaaS without a security review. "Run it yourself, the data never leaves" removes that objection, builds trust in what the hosted service does with data, and turns self-hosters into a path to paying customers. Keeping the backend in this repository also removes the need to publish and version the shared crates separately.
 
-## 16. Open questions
+## 16. Self-hosting
 
-1. Does the backend live in this repository or a private one? A private repository would depend on published `groundstation-schema` and `groundstation-api` crates, so those need versioning and release discipline.
-2. Tenancy model: personal workspace by default, with teams as a plan upgrade, or teams from the start?
-3. Default retention per plan, and whether it can be shorter for content attributes than for measurements.
-4. Region: one region at launch, or EU data residency from M2?
-5. Should `gsd` offer a "measurements only" cloud mode that excludes every content attribute when uploading while keeping it locally? It would make cloud mode an easier yes for cautious teams, at the cost of weaker findings.
+Self-hosting runs the same code as the hosted service. A self-hosted instance is the hosted service with one tenant and the operator's own sign-in.
+
+- **What it takes:** ClickHouse, Postgres, and the Ground Station server image. The repository ships a `docker-compose.yml` that starts all three, and the same file is the development environment, so it can't drift from what developers use. A Helm chart comes later, if self-hosters ask for it.
+- **Configuration** is environment variables only: database URLs, the public URL, the OIDC provider, and retention. No config files to mount.
+- **Migrations** for both databases run when the server starts, so upgrading is a change of image tag. Each release says which versions it can upgrade from.
+- **Ingest tokens** are created in the UI or with the CLI. `groundstation cloud login --endpoint https://gs.internal.example` points `gsd` at a self-hosted instance the same way it points at the hosted one.
+- **Nothing calls home** by default. An opt-in, anonymous usage report (version, event volume) may come later; it's never on without the operator choosing it.
+- **No required managed services:** no Kafka, no object storage, no external queue. Keeping ingest stateless and leaning on `gsd`'s own queue (§5.1) is what makes a three-container deployment enough.
+
+## 17. Repository and licensing
+
+The backend lives in this repository, next to the daemon and the UI it serves:
+
+| Path | | License |
+|:--|:--|:--|
+| `crates/schema`, `crates/api`, `crates/gsd`, `crates/groundstation`, `adapters/*`, `ui/` | daemon, CLI, wire types, UI | Apache-2.0, as today |
+| `crates/server` | the backend: ingest, api, insights worker, in one binary with subcommands | the core license (open question 1) |
+| `ee/` | enterprise features, compiled into the server behind an `ee` Cargo feature | commercial; free to try, a license key to use in production |
+
+The model is open core, as PostHog and Langfuse run it: everything a team needs to self-host and use Ground Station is open, and the features large organizations pay for are in `ee/`. Revenue comes from the hosted service, from `ee/` licenses for self-hosted enterprises, and from support.
+
+What goes where:
+
+- **Open:** ingest, storage, the full `/v1` API, the UI, tenancy, OIDC sign-in, ingest tokens, retention settings, and the insights detectors in §9.2.
+- **`ee/`:** SAML, SCIM provisioning, role-based access control beyond admin and member, audit logs, per-project retention policies, and anything built specifically for very large deployments.
+
+A rule keeps the line honest: a feature goes in `ee/` only if it matters mostly to organizations with a security or procurement team. Anything a small team needs to get value from Ground Station is open.
+
+## 18. Open questions
+
+1. The core license for `crates/server`: Apache-2.0, like the rest of the repository, for the widest adoption; or AGPL-3.0, so a company that hosts a modified copy as a service must publish its changes. AGPL protects the hosted business better; some companies' legal teams won't approve AGPL software, which costs some self-hosted adoption.
+2. Whether any insights beyond §9.2 (LLM-written findings, cross-team benchmarks) are hosted-only or `ee/`, or stay open.
+3. Tenancy model: personal workspace by default, with teams as a plan upgrade, or teams from the start?
+4. Default retention per plan, and whether it can be shorter for content attributes than for measurements.
+5. Region: one region at launch, or EU data residency from M2?
+6. Should `gsd` offer a "measurements only" cloud mode that excludes every content attribute when uploading while keeping it locally? It would make cloud mode an easier yes for cautious teams, at the cost of weaker findings.
