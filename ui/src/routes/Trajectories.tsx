@@ -90,7 +90,7 @@ export function Trajectories() {
   const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error") return <Empty title="Couldn't load trajectories" body={st.error} />;
-  const rows = [...st.data.data].sort((a, b) => (order === "newest" ? b.started_at.localeCompare(a.started_at) : a.started_at.localeCompare(b.started_at)));
+  const rows = [...st.data].sort((a, b) => (order === "newest" ? b.started_at.localeCompare(a.started_at) : a.started_at.localeCompare(b.started_at)));
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between">
@@ -99,7 +99,7 @@ export function Trajectories() {
           <p className="mt-0.5 text-[12.5px] text-fg-3">Every agent run this daemon has seen, {order} first.</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="mono hidden whitespace-nowrap text-[11px] text-fg-4 sm:block">{st.data.source === "demo" ? "demo data" : "local · updates every 5s"}</div>
+          <div className="mono hidden whitespace-nowrap text-[11px] text-fg-4 sm:block">updates every 5s</div>
           <SortToggle order={order} onChange={setOrder} />
         </div>
       </div>
