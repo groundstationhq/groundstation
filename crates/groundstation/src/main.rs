@@ -795,10 +795,16 @@ async fn status(config: &Config) -> Result<ExitCode> {
     );
     println!("  spool     {} pending", health.spool_pending);
     match health.upload.endpoint {
-        Some(endpoint) => println!(
-            "  transport {} → {endpoint} ({} pending)",
-            health.upload.mode, health.upload.pending
-        ),
+        Some(endpoint) => {
+            let dropped = match health.upload.dropped {
+                0 => String::new(),
+                n => format!(", {n} dropped after repeated refusal"),
+            };
+            println!(
+                "  transport {} → {endpoint} ({} pending{dropped})",
+                health.upload.mode, health.upload.pending
+            )
+        }
         None => println!(
             "  transport {} (nothing leaves this machine)",
             health.upload.mode

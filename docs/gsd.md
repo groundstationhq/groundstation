@@ -130,6 +130,8 @@ All of it runs inside `gsd`, before anything is written to disk or uploaded:
 - **`env`** globs match variable names (case-insensitive). `NAME=value` and `"NAME": "value"` assignments for matching names are redacted anywhere they appear. The values those variables hold in gsd's own environment (8+ characters) are redacted literally too, so `DATABASE_URL`'s value is caught even when a command prints it without the name.
 - **`paths = "hash"`** hashes path attributes and the path fields of tool input (`file_path`, `path` …). The same file still groups together, so repeated-read detection keeps working. Paths embedded in free text such as shell commands are not rewritten; use `exclude` for those.
 
+**Uploading.** With `mode = "cloud"`, gsd sends queued events to `{endpoint}/v1/events` in gzip batches of up to `batch_size`, in the order they were stored. Network errors, auth failures, rate limits (`retry-after` is honored) and server errors leave the queue untouched and retry with backoff up to 5 minutes. A 413 halves the batch. The backend can refuse single events while accepting the rest (`rejected` in the response). A refused event stays queued and is dropped from the queue after 3 refusals, so one bad event can't block the ones behind it. Dropped events stay in the local store, and `groundstation status` counts them.
+
 ## Telemetry schema
 
 Events carry an `id`, `trajectory_id`, `kind`, `timestamp`, `agent`, an optional `span_id`, and `attributes`. Attributes use OpenTelemetry `gen_ai.*` names where a convention exists and `gs.*` for everything else (see [`crates/schema/src/attr.rs`](../crates/schema/src/attr.rs)).

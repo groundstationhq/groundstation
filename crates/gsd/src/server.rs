@@ -97,6 +97,7 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
             mode: s.config.transport.mode.as_str().into(),
             endpoint: s.config.upload_endpoint().map(String::from),
             pending: counts.pending_upload,
+            dropped: counts.dropped_upload,
         },
     }))
 }
@@ -107,7 +108,10 @@ async fn ingest_events(
 ) -> Result<Json<IngestResponse>, ApiError> {
     let ingestor = s.ingestor.clone();
     let stored = blocking(move || ingestor.ingest_batch(batch)).await?;
-    Ok(Json(IngestResponse { stored }))
+    Ok(Json(IngestResponse {
+        stored,
+        ..Default::default()
+    }))
 }
 
 async fn ingest_hook(
@@ -130,7 +134,10 @@ async fn ingest_hook(
     // hooks at 3s), while a first transcript read can take much longer.
     let ingestor = s.ingestor.clone();
     tokio::task::spawn_blocking(move || ingestor.follow_up(follow_up));
-    Ok(Json(IngestResponse { stored }))
+    Ok(Json(IngestResponse {
+        stored,
+        ..Default::default()
+    }))
 }
 
 async fn resync(

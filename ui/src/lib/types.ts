@@ -102,7 +102,8 @@ export interface Health {
   trajectories: number;
   events: number;
   spool_pending: number;
-  upload: { mode: string; endpoint: string | null; pending: number };
+  /** `dropped`: events given up on after repeated rejection by the backend. */
+  upload: { mode: string; endpoint: string | null; pending: number; dropped: number };
 }
 
 /** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/gsd/src/api.rs. */
