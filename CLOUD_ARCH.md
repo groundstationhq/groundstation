@@ -447,23 +447,23 @@ The backend lives in this repository, next to the daemon and the UI it serves:
 | Path | | License |
 |:--|:--|:--|
 | `crates/schema`, `crates/api`, `crates/gsd`, `crates/groundstation`, `adapters/*`, `ui/` | daemon, CLI, wire types, UI | Apache-2.0, as today |
-| `crates/server` | the backend: ingest, api, insights worker, in one binary with subcommands | the core license (open question 1) |
+| `crates/server` | the backend: ingest, api, insights worker, in one binary with subcommands | Apache-2.0 |
 | `ee/` | enterprise features, compiled into the server behind an `ee` Cargo feature | commercial; free to try, a license key to use in production |
 
 The model is open core, as PostHog and Langfuse run it: everything a team needs to self-host and use Ground Station is open, and the features large organizations pay for are in `ee/`. Revenue comes from the hosted service, from `ee/` licenses for self-hosted enterprises, and from support.
 
 What goes where:
 
-- **Open:** ingest, storage, the full `/v1` API, the UI, tenancy, OIDC sign-in, ingest tokens, retention settings, and the insights detectors in §9.2.
+- **Open:** ingest, storage, the full `/v1` API, the UI, tenancy, OIDC sign-in, ingest tokens, retention settings, and all of insights: the rule-based detectors in §9.2 and, when they come, LLM-written findings (§9.4) and benchmarks.
 - **`ee/`:** SAML, SCIM provisioning, role-based access control beyond admin and member, audit logs, per-project retention policies, and anything built specifically for very large deployments.
 
 A rule keeps the line honest: a feature goes in `ee/` only if it matters mostly to organizations with a security or procurement team. Anything a small team needs to get value from Ground Station is open.
 
+The core is Apache-2.0, like the rest of the repository, for the widest adoption: no legal review blocks a team from self-hosting it. The tradeoff is accepted knowingly. Anyone may host a copy as a competing service without publishing changes; the hosted service has to win on running Ground Station well, not on the license.
+
 ## 18. Open questions
 
-1. The core license for `crates/server`: Apache-2.0, like the rest of the repository, for the widest adoption; or AGPL-3.0, so a company that hosts a modified copy as a service must publish its changes. AGPL protects the hosted business better; some companies' legal teams won't approve AGPL software, which costs some self-hosted adoption.
-2. Whether any insights beyond §9.2 (LLM-written findings, cross-team benchmarks) are hosted-only or `ee/`, or stay open.
-3. Tenancy model: personal workspace by default, with teams as a plan upgrade, or teams from the start?
-4. Default retention per plan, and whether it can be shorter for content attributes than for measurements.
-5. Region: one region at launch, or EU data residency from M2?
-6. Should `gsd` offer a "measurements only" cloud mode that excludes every content attribute when uploading while keeping it locally? It would make cloud mode an easier yes for cautious teams, at the cost of weaker findings.
+1. Tenancy model: personal workspace by default, with teams as a plan upgrade, or teams from the start?
+2. Default retention per plan, and whether it can be shorter for content attributes than for measurements.
+3. Region: one region at launch, or EU data residency from M2?
+4. Should `gsd` offer a "measurements only" cloud mode that excludes every content attribute when uploading while keeping it locally? It would make cloud mode an easier yes for cautious teams, at the cost of weaker findings.
