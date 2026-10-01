@@ -1,6 +1,6 @@
 /**
  * Wire types. Mirror `crates/schema` (groundstation.telemetry.v0) and
- * `crates/gsd/src/api.rs` exactly. Change them in the same PR as the Rust side.
+ * `crates/api` exactly. Change them in the same PR as the Rust side.
  */
 
 export const SCHEMA = "groundstation.telemetry.v0";
@@ -93,24 +93,38 @@ export const attr = {
   NOTIFICATION_MESSAGE: "gs.notification.message",
 } as const;
 
+/** `GET /v1/health`. Mirrors `Health` in crates/api. Fields that describe one machine's daemon are absent on the hosted backend. */
 export interface Health {
   status: string;
-  /** Whether this daemon serves the UI at `/`. */
+  /** Which host is answering; absent from gsd builds older than this field. */
+  deployment?: "local" | "hosted";
+  /** Optional endpoint groups this host serves, e.g. `insights`. */
+  features?: string[];
+  /** Whether this host serves the UI at `/`. */
   ui?: boolean;
-  /** Adapters this daemon accepts at `/v1/adapters/{name}`. */
+  /** Adapters this host accepts at `/v1/adapters/{name}`. */
   adapters: string[];
   version: string;
   schema: string;
-  pid: number;
-  data_dir: string;
   trajectories: number;
   events: number;
-  spool_pending: number;
-  /** `dropped`: events given up on after repeated rejection by the backend. */
-  upload: { mode: string; endpoint: string | null; pending: number; dropped: number };
+  pid?: number;
+  data_dir?: string;
+  spool_pending?: number;
+  upload?: UploadStatus;
 }
 
-/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/gsd/src/api.rs. */
+export interface UploadStatus {
+  mode: string;
+  endpoint: string | null;
+  pending: number;
+  /** Events given up on after repeated rejection by the backend. */
+  dropped: number;
+  /** The most recent failed upload, cleared by the next success. */
+  last_error?: { message: string; at: string };
+}
+
+/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/api. */
 export interface ToolStats {
   days: number;
   since: string;

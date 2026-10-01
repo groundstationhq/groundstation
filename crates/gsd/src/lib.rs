@@ -67,15 +67,18 @@ pub async fn run(config: Config) -> Result<()> {
         ingestor.clone(),
         shutdown_rx.clone(),
     ));
+    let upload = uploader::UploadState::default();
     tasks.spawn(uploader::run(
         config.clone(),
         store.clone(),
+        upload.clone(),
         shutdown_rx.clone(),
     ));
 
     let app = server::router(AppState {
         ingestor,
         config: config.clone(),
+        upload,
         shutdown: shutdown_tx.clone(),
     });
     tracing::info!(

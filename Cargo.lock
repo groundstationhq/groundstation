@@ -649,6 +649,7 @@ dependencies = [
  "chrono",
  "groundstation-schema",
  "serde",
+ "serde_json",
  "uuid",
 ]
 

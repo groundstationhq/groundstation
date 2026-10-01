@@ -367,16 +367,16 @@ A model can write better narrative findings than rules, but it needs content: pr
 - **Per trajectory, at upload:** `gs.host.name` and `gs.vcs.repository` don't change within a trajectory. They stay on the local `trajectories` row, and the uploader adds them to each event it sends. With `paths = "hash"`, the repository is hashed like any other path. The repository lookup runs shortly after a trajectory's first event, so an early event may upload without it; the cloud takes any non-empty value across the trajectory's events.
 - `TrajectorySummary.revision` and `branch` are the latest checkout. The UI shows the short revision, a commit count, and a "HEAD moved" divider in the event list.
 
-### 11.2 Uploader error handling (done, except the last item)
+### 11.2 Uploader error handling (done)
 
 - Parse `rejected` on 200. Accepted events are marked uploaded. Each rejected event gets a refusal counted against it (`events.upload_attempts`) and stays queued. After 3 refusals it is marked dropped (`uploaded = 2`) and logged by id. An event whose content changes later (an updated `model.completed`) is queued again with a fresh count. `upload.dropped` in `/v1/health` and `groundstation status` report how many were dropped.
 - On 413, halve the batch size for the next attempt, then grow it back after successes. A single event that still gets 413 counts as a refusal.
 - On 429, wait for `retry-after`.
-- Not yet done: record the last error and when it happened, and expose them as `upload.last_error` in `/v1/health` and `groundstation status`, so a revoked token is visible instead of silent.
+- Record the last error and when it happened, and expose them as `upload.last_error` in `/v1/health` and `groundstation status`, so a revoked token is visible instead of silent. It clears on the next success.
 
-### 11.3 `Health`
+### 11.3 `Health` (done)
 
-The field changes in §8.2, applied to `crates/gsd/src/api.rs`, `ui/src/lib/types.ts` and `Shell.tsx`.
+Done: the field changes in §8.2, applied to `crates/api`, `ui/src/lib/types.ts` and `Shell.tsx`. The UI labels the connection from `deployment`, and shows "upload failing" with the error when `upload.last_error` is set.
 
 ### 11.4 An API types crate (done)
 
@@ -386,7 +386,7 @@ The hosted services need `TrajectorySummary`, `TrajectoryDetail`, `ToolStats`, `
 
 - Done: the demo fallback and fixtures are gone. A 401 from any `/v1` call replaces the app with a sign-in screen linking to `/auth/login`. When `/v1/health` fails, a full-page error screen says either that gsd can't be reached or which HTTP status came back, and the app recovers on its own once health succeeds.
 - To do: an insights view, shown only when `features` includes `insights`.
-- To do: the connection label reads `deployment` instead of guessing from `upload.endpoint`.
+- Done: the connection label reads `deployment` instead of guessing from `upload.endpoint`.
 
 ### 11.6 CLI
 
@@ -412,7 +412,7 @@ The hosted services need `TrajectorySummary`, `TrajectoryDetail`, `ToolStats`, `
 
 | Milestone | Delivers |
 |:--|:--|
-| M0 | Changes in this repository: §11.1–11.5, the `groundstation-api` crate, and contract tests against `gsd`. Mostly done; left are `upload.last_error`, the `Health` changes in §8.2, and the contract tests. |
+| M0 | Changes in this repository: §11.1–11.5, the `groundstation-api` crate, and contract tests against `gsd`. Done, except the contract tests. |
 | M1 | ingest, ClickHouse, and api with read parity, single tenant, internal use only; hosted `ui/dist` unmodified |
 | M2 | Tenancy, GitHub login, ingest tokens, retention, `groundstation cloud login`; private beta |
 | M3 | Insights worker with the first detectors, and the insights view in the UI |

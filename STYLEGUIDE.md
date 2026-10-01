@@ -212,7 +212,7 @@ Terminology: **trajectory** (never "session" or "run" in UI), **turn**, **model 
 - Vite + React 19 + TypeScript strict + Tailwind v4. `motion` is the only animation dependency. Add a dependency only when it replaces > 100 lines you'd otherwise write.
 - Tokens live in `src/index.css` under `@theme`; utilities like `.label`, `.mono`, `.tnum` are defined there once.
 - Files: `src/lib/*` pure helpers (format, api, spans, hooks), `src/components/ui/*` primitives, `src/components/*` composites, `src/routes/*` one file per screen. Named exports; `App` is the only default export.
-- Types for the wire format mirror `crates/schema` and `crates/gsd/src/api.rs` exactly (`Event`, `EventKind`, `TrajectorySummary`, `TrajectoryDetail`, `Health`). Attribute keys are the same strings as `groundstation_schema::attr`. When the schema changes, the UI types change in the same PR.
+- Types for the wire format mirror `crates/schema` and `crates/api` exactly (`Event`, `EventKind`, `TrajectorySummary`, `TrajectoryDetail`, `Health`). Attribute keys are the same strings as `groundstation_schema::attr`. When the schema changes, the UI types change in the same PR.
 - Never render content attributes (`gs.prompt.text`, `gs.tool.input.body`, `gs.tool.output.body`, `gs.shell.command`) without truncation and a way to expand; the daemon may have redacted them, so always handle absence.
 - No `any`. No inline hex. No `style=` except for computed geometry (widths from data, transforms).
 
