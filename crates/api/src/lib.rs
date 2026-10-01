@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 use groundstation_schema::{Batch, Event};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use groundstation_schema::HookEnvelope;
 
@@ -19,10 +20,21 @@ pub enum SpoolItem {
     Batch(Batch),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestResponse {
     /// Events produced by this request that were new or changed.
     pub stored: usize,
+    /// Events the receiver refused, each with the reason. The rest of the
+    /// batch was accepted. gsd never rejects; the hosted backend may.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected: Vec<Rejection>,
+}
+
+/// One event a receiver refused (`IngestResponse::rejected`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Rejection {
+    pub id: Uuid,
+    pub error: String,
 }
 
 /// Result of re-reading an adapter's transcripts (`POST /v1/adapters/{name}/resync`).
@@ -70,6 +82,10 @@ pub struct UploadStatus {
     /// `None` in local-only mode.
     pub endpoint: Option<String>,
     pub pending: u64,
+    /// Events dropped from the upload queue after the backend rejected them
+    /// repeatedly. They stay in the local store.
+    #[serde(default)]
+    pub dropped: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

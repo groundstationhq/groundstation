@@ -64,6 +64,9 @@ CREATE TABLE transcripts (
     // Who a transcript belongs to, so it can be re-read without waiting for a hook.
     "ALTER TABLE transcripts ADD COLUMN adapter TEXT;
      ALTER TABLE transcripts ADD COLUMN trajectory_id TEXT;",
+    // Upload bookkeeping: `uploaded` is 0 while queued, 1 once accepted, 2 once
+    // dropped after repeated rejection.
+    "ALTER TABLE events ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Store {
@@ -173,7 +176,7 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                      ts_ns = excluded.ts_ns, attributes = excluded.attributes,
-                     agent_version = excluded.agent_version, uploaded = 0
+                     agent_version = excluded.agent_version, uploaded = 0, upload_attempts = 0
                  WHERE excluded.kind = 'model.completed' AND events.attributes != excluded.attributes",
                 params![
                     event.id.to_string(),
@@ -383,6 +386,32 @@ impl Store {
         Ok(())
     }
 
+    /// Counts a backend rejection against each event. An event rejected
+    /// `max_attempts` times leaves the upload queue but stays in the store.
+    /// Returns the sequence numbers that were dropped.
+    pub fn record_rejections(&self, seqs: &[i64], max_attempts: i64) -> Result<Vec<i64>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut dropped = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE events SET upload_attempts = upload_attempts + 1,
+                     uploaded = CASE WHEN upload_attempts + 1 >= ?2 THEN 2 ELSE 0 END
+                 WHERE seq = ?1 RETURNING uploaded",
+            )?;
+            for &seq in seqs {
+                let state: Option<i64> = stmt
+                    .query_row(params![seq, max_attempts], |r| r.get(0))
+                    .optional()?;
+                if state == Some(2) {
+                    dropped.push(seq);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(dropped)
+    }
+
     /// Latency percentiles per tool category for tool calls that closed at or
     /// after `since_ns`. Uses the closing event's `gs.duration_ms`, so calls
     /// still open are not counted. Most-called categories first.
@@ -440,13 +469,15 @@ impl Store {
         let conn = self.conn();
         Ok(conn.query_row(
             "SELECT (SELECT COUNT(*) FROM trajectories), (SELECT COUNT(*) FROM events),
-                    (SELECT COUNT(*) FROM events WHERE uploaded = 0)",
+                    (SELECT COUNT(*) FROM events WHERE uploaded = 0),
+                    (SELECT COUNT(*) FROM events WHERE uploaded = 2)",
             [],
             |r| {
                 Ok(Counts {
                     trajectories: count(r, 0)?,
                     events: count(r, 1)?,
                     pending_upload: count(r, 2)?,
+                    dropped_upload: count(r, 3)?,
                 })
             },
         )?)
@@ -472,6 +503,8 @@ pub struct Counts {
     pub trajectories: u64,
     pub events: u64,
     pub pending_upload: u64,
+    /// Events the backend rejected too often to keep retrying.
+    pub dropped_upload: u64,
 }
 
 fn upsert_trajectory(
@@ -718,6 +751,24 @@ mod tests {
             .find(|e| e.kind == EventKind::ToolFailed)
             .unwrap();
         assert_eq!(failed.get(attr::DURATION_MS), Some(&Value::from(47_193)));
+    }
+
+    #[test]
+    fn an_updated_event_gets_fresh_upload_attempts() {
+        let store = Store::open_in_memory().unwrap();
+        let mut model = ev("a", EventKind::ModelCompleted, Utc::now());
+        model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
+        store.insert(vec![new(model.clone())]).unwrap();
+        let seq = store.pending_upload(1).unwrap()[0].0;
+        assert!(store.record_rejections(&[seq], 2).unwrap().is_empty());
+        assert_eq!(store.record_rejections(&[seq], 2).unwrap(), vec![seq]);
+        assert_eq!(store.counts().unwrap().dropped_upload, 1);
+
+        model.set(attr::GEN_AI_OUTPUT_TOKENS, 2);
+        store.insert(vec![new(model)]).unwrap();
+        let counts = store.counts().unwrap();
+        assert_eq!((counts.pending_upload, counts.dropped_upload), (1, 0));
+        assert!(store.record_rejections(&[seq], 2).unwrap().is_empty());
     }
 
     #[test]
