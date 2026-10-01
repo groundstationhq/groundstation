@@ -9,11 +9,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use groundstation_api::{ToolLatency, TrajectorySummary};
 use groundstation_schema::{Event, EventKind, attr};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 
-use crate::api::{ToolLatency, TrajectorySummary};
 use crate::perms;
 
 const MIGRATIONS: &[&str] = &[

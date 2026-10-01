@@ -1,4 +1,5 @@
-//! Types exchanged over gsd's local HTTP API (shared with the `groundstation` CLI).
+//! Types exchanged over the Ground Station HTTP API: gsd's local `/v1` and the
+//! hosted backend serve the same shapes. No I/O, so any host can depend on it.
 
 use chrono::{DateTime, Utc};
 use groundstation_schema::{Batch, Event};

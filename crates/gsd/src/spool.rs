@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
+use groundstation_api::SpoolItem;
 use uuid::Uuid;
 
-use crate::api::SpoolItem;
 use crate::ingest::Ingestor;
 use crate::perms;
 
@@ -110,10 +110,10 @@ fn move_into(dir: &Path, sub: &str, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::HookEnvelope;
     use crate::config::Config;
     use crate::privacy::Privacy;
     use crate::store::Store;
+    use groundstation_api::HookEnvelope;
     use serde_json::json;
     use std::sync::Arc;
 
