@@ -18,6 +18,7 @@ groundstation-adapter-codex = { version = "0.1.0", path = "../../adapters/codex"
 groundstation-adapter-opencode = { version = "0.1.0", path = "../../adapters/opencode" }
 groundstation-adapter-pi = { version = "0.1.0", path = "../../adapters/pi" }
 groundstation-hooks-json = { version = "0.1.0", path = "../hooks-json" }
+groundstation-api = { version = "0.1.0", path = "../api" }
 groundstation-schema = { version = "0.1.0", path = "../schema" }
 gsd = { version = "0.1.0", path = "../gsd" }
 open = "5.4.4"

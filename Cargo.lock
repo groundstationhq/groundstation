@@ -576,6 +576,7 @@ dependencies = [
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
  "groundstation-adapter-pi",
+ "groundstation-api",
  "groundstation-hooks-json",
  "groundstation-schema",
  "gsd",
@@ -642,6 +643,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-api"
+version = "0.1.2"
+dependencies = [
+ "chrono",
+ "groundstation-schema",
+ "serde",
+]
+
+[[package]]
 name = "groundstation-hooks-json"
 version = "0.1.2"
 dependencies = [
@@ -674,6 +684,7 @@ dependencies = [
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
  "groundstation-adapter-pi",
+ "groundstation-api",
  "groundstation-schema",
  "hex",
  "http-body-util",

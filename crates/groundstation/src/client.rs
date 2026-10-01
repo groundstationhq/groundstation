@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use gsd::api::{
+use groundstation_api::{
     ErrorBody, Health, IngestResponse, ResyncResponse, TrajectoryDetail, TrajectorySummary,
 };
 use gsd::config::Config;

@@ -5,6 +5,7 @@ The local half of Ground Station: the `gsd` daemon, the `groundstation` CLI, and
 | Crate | Binary | What it does |
 |---|---|---|
 | [`crates/schema`](../crates/schema) | | `groundstation.telemetry.v0`: event types and attribute names shared by adapters, SDKs, `gsd` and the backend |
+| [`crates/api`](../crates/api) | | Wire types of the HTTP API (`Health`, `TrajectorySummary`, `IngestResponse` …), shared by `gsd`, the CLI and the hosted backend |
 | [`crates/gsd`](../crates/gsd) | `gsd` | Local daemon. Ingests, redacts, stores and (optionally) uploads agent telemetry, translating hook payloads with the matching adapter |
 | [`crates/groundstation`](../crates/groundstation) | `groundstation` | CLI. Connects agents, runs their hooks, manages `gsd`, and shows trajectories |
 | [`adapters/claude-code`](../adapters/claude-code) | | Claude Code: installs hooks in `settings.json`, turns hook payloads and transcript lines into events. Sample payloads in `tests/fixtures/` |

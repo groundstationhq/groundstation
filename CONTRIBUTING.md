@@ -31,7 +31,7 @@ RUST_LOG=gsd=debug cargo run -p gsd
 
 - One change per PR. Keep refactors separate from behaviour changes.
 - Add or update a test. Adapter changes need a fixture in `adapters/<agent>/tests/fixtures/` showing the real payload.
-- If you change the wire format, change `crates/schema`, `crates/gsd/src/api.rs` and `ui/src/lib/types.ts` in the same PR.
+- If you change the wire format, change `crates/schema`, `crates/api` and `ui/src/lib/types.ts` in the same PR.
 - Never log or persist content attributes outside the store, and never log tokens.
 - Commit subjects are turned into the changelog by `cliff.toml`, so write them as `UI: …`, `CLI: …`, `gsd: …`, `Add …`, `Fix …` or `Docs: …`. Don't edit `CHANGELOG.md` by hand.
 

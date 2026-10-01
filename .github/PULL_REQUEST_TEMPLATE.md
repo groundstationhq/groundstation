@@ -10,6 +10,6 @@
 
 - [ ] `cargo test --workspace`, `cargo clippy --workspace --all-targets` and `cargo fmt --all --check` pass
 - [ ] Adapter changes come with a fixture in `adapters/<agent>/tests/fixtures/`
-- [ ] Wire format changes update `crates/schema`, `crates/gsd/src/api.rs` and `ui/src/lib/types.ts` together
+- [ ] Wire format changes update `crates/schema`, `crates/api` and `ui/src/lib/types.ts` together
 - [ ] No content attributes or tokens are logged or persisted outside the store
 - [ ] Visual changes follow `STYLEGUIDE.md`

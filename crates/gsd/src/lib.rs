@@ -7,7 +7,6 @@
 //! rules, persists them locally, serves them back for local inspection and,
 //! when a backend is configured, uploads them in compressed batches.
 
-pub mod api;
 pub mod config;
 pub mod ingest;
 pub mod perms;

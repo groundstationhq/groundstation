@@ -19,6 +19,7 @@ groundstation-adapter-claude-code = { version = "0.1.0", path = "../../adapters/
 groundstation-adapter-codex = { version = "0.1.0", path = "../../adapters/codex" }
 groundstation-adapter-opencode = { version = "0.1.0", path = "../../adapters/opencode" }
 groundstation-adapter-pi = { version = "0.1.0", path = "../../adapters/pi" }
+groundstation-api = { version = "0.1.0", path = "../api" }
 groundstation-schema = { version = "0.1.0", path = "../schema" }
 hex = "0.4.3"
 regex = "1.13.1"

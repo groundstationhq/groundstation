@@ -1,0 +1,17 @@
+[package]
+name = "groundstation-api"
+description = "Wire types of the Ground Station HTTP API, shared by gsd, the CLI and the hosted backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
+groundstation-schema = { version = "0.1.0", path = "../schema" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[lints]
+workspace = true

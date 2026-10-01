@@ -12,9 +12,9 @@ use groundstation_adapter_claude_code::ClaudeCode;
 use groundstation_adapter_codex::Codex;
 use groundstation_adapter_opencode::OpenCode;
 use groundstation_adapter_pi::Pi;
+use groundstation_api::{ResyncFailure, ResyncResponse, SpoolItem};
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
 
-use crate::api::{ResyncFailure, ResyncResponse, SpoolItem};
 use crate::privacy::Privacy;
 use crate::store::{NewEvent, Store};
 

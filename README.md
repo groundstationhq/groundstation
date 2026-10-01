@@ -152,6 +152,7 @@ groundstation/
 ├── Cargo.toml                  workspace · edition 2024 · rust 1.88 · resolver 3
 ├── crates/
 │   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
+│   ├── api/                    groundstation-api: wire types of the HTTP API, shared with the hosted backend
 │   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction, embedded UI)
 │   ├── groundstation/          the `groundstation` CLI (connect, daemon, status, trajectories, show, ui, resync, config)
 │   └── hooks-json/             shared editing of agent hook configs (Claude Code, Codex)

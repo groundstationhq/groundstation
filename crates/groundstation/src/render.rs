@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use chrono::{DateTime, Local, Utc};
+use groundstation_api::{TrajectoryDetail, TrajectorySummary};
 use groundstation_schema::{Event, EventKind, attr};
-use gsd::api::{TrajectoryDetail, TrajectorySummary};
 use serde_json::Value;
 
 pub fn trajectory_table(rows: &[TrajectorySummary]) -> String {
