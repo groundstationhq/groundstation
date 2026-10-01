@@ -30,7 +30,7 @@ What exists today, and constrains this design:
 - **Redaction happens before upload.** Secrets, env values, excluded content fields and hashed paths are handled in `gsd` before anything is stored, so the cloud only ever receives what the user's `[redaction]` config allows. Raw agent payloads are never uploaded; only normalized `Event`s are.
 - **Event ids are stable.** They are derived from the hook invocation or the transcript message id. The same event is redelivered with the same id.
 - **Some events change.** `model.completed` events are re-read from growing transcripts. When their attributes change, `gsd` updates the row and resets `uploaded = 0`, so the same event id is uploaded again with newer content. Every other kind is write-once.
-- **Trajectory context is added on upload.** The local `trajectories` table carries `host`, `repository`, `branch` and `revision`, which `gsd` learns from the machine and a git lookup, not from the agent. The stored events don't carry them, so the uploader adds them to each event it sends (§11.1).
+- **Git checkout is on every event.** Each event records the commit and branch checked out when it happened (`gs.vcs.revision`, `gs.vcs.branch`), so a long trajectory that spans commits records each one. Host and repository don't change within a trajectory: they live on the local `trajectories` table, and the uploader adds them to each event it sends (§11.1).
 - **The UI.** `ui/src/lib/api.ts` fetches relative paths (`BASE = ""`). When `/v1/health` fails for any reason, it switches to demo fixtures.
 
 ## 3. Goals and non-goals
@@ -241,10 +241,12 @@ SELECT tenant_id, trajectory_id, any(agent) AS agent, min(ts) AS started_at, max
 FROM events GROUP BY tenant_id, trajectory_id;
 ```
 
+With the revision on every event, "did p95 tool latency or cost change after commit X" is a `GROUP BY revision` over `events`, with no join.
+
 `GET /v1/trajectories?limit=N` then takes two steps:
 
 1. Pick the top N `trajectory_id`s by `max(updated_at)` from `traj_index` for the tenant.
-2. Compute the full `TrajectorySummary` for just those N from deduplicated `events`: counts, token sums, cost, `status`, `title`, `ended_at`, and host, repository, branch and revision from the latest non-empty values.
+2. Compute the full `TrajectorySummary` for just those N from deduplicated `events`: counts, token sums, cost, `status`, `title`, `ended_at`, host and repository from any non-empty value, and branch and revision from the latest event that has them.
 
 Status, title and `ended_at` follow the rules in `upsert_trajectory` (`crates/gsd/src/store.rs`): status follows the latest status-bearing event, late events don't rewind it, and a resume reopens a completed trajectory. To keep the two hosts in agreement, the local store tests and the hosted query tests run the same fixture trajectories and must produce identical summaries (§12).
 
@@ -359,9 +361,11 @@ A model can write better narrative findings than rules, but it needs content: pr
 
 ## 11. Changes in this repository
 
-### 11.1 Stamp trajectory context on uploaded events (done)
+### 11.1 Git checkout and trajectory context on events (done)
 
-At upload time, the uploader joins each pending event to its `trajectories` row and adds whatever is known then: `gs.host.name`, `gs.vcs.repository`, `gs.vcs.branch` and `gs.vcs.revision`. These are constants in `crates/schema/src/attr.rs`. An event's own value for one of these keys wins over the trajectory's. `revision` is `git rev-parse HEAD` at the trajectory's first event; it is also stored locally and returned as `TrajectorySummary.revision`. Redaction applies: with `paths = "hash"`, the repository is hashed like any other path. The stored events stay as they are; only the uploaded copy carries the fields. The repository lookup runs shortly after a trajectory's first event, so an early event may upload without it. The cloud takes the latest non-empty value across a trajectory's events, so later events fill it in.
+- **Per event, at ingest:** `gs.vcs.revision` and `gs.vcs.branch`, the checkout when the event happened. `gsd` caches the checkout per trajectory and asks git at most every 2 s, and always on a new user turn and after a shell command, where HEAD moves. Model calls read from transcripts take the checkout of the latest event before them, so re-reading a transcript doesn't change them. Stamping at ingest rather than at upload means a backlog uploaded later still carries the right commit.
+- **Per trajectory, at upload:** `gs.host.name` and `gs.vcs.repository` don't change within a trajectory. They stay on the local `trajectories` row, and the uploader adds them to each event it sends. With `paths = "hash"`, the repository is hashed like any other path. The repository lookup runs shortly after a trajectory's first event, so an early event may upload without it; the cloud takes any non-empty value across the trajectory's events.
+- `TrajectorySummary.revision` and `branch` are the latest checkout. The UI shows the short revision, a commit count, and a "HEAD moved" divider in the event list.
 
 ### 11.2 Uploader error handling (done, except the last item)
 
