@@ -1,0 +1,21 @@
+# The image builds from the workspace's sources and nothing else, so secrets
+# (a self-hosting .env), local planning files and build output stay out of the
+# build context and its cache.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!adapters
+!ui
+!LICENSE
+!NOTICE
+ui/node_modules
+ui/dist
+**/*.tsbuildinfo
+**/.DS_Store
+# Local secrets inside the allowed directories, as their .gitignore files keep them out of git.
+**/.env*
+!**/.env.example
+**/.dev.vars*
+**/.wrangler
+**/.cloudflare

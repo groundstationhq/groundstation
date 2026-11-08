@@ -5,3 +5,7 @@
 /product.md
 /todo.md
 /CLOUD_ARCH.md
+/result.md
+/tmp_full_prompt.txt
+# Self-hosting settings and passwords (docs/backend.md)
+/.env
