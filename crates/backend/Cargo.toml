@@ -1,0 +1,45 @@
+[package]
+name = "groundstation-backend"
+description = "Code shared by the Ground Station backend services (ingest, api, worker): storage, configuration and service startup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+axum = "0.8.9"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+# TLS for https:// URLs (ClickHouse Cloud), verified against the system's roots.
+clickhouse = { version = "0.13.3", default-features = false, features = ["chrono", "uuid", "rustls-tls-aws-lc", "rustls-tls-native-roots"] }
+deadpool-postgres = "0.14.2"
+getrandom = "0.4.3"
+groundstation-schema = { version = "0.1.2", path = "../schema" }
+groundstation-wire = { version = "0.1.2", path = "../wire" }
+hex = "0.4.3"
+rustls = "0.23.45"
+rustls-platform-verifier = "0.7.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "signal", "net"] }
+tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.14.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.26.1", features = ["v7", "serde"] }
+
+[features]
+# Helpers for tests that run against the databases in docker-compose.yml.
+testing = []
+
+[dev-dependencies]
+groundstation-backend = { path = ".", features = ["testing"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
