@@ -16,8 +16,8 @@ use groundstation_adapter_claude_code as claude_code;
 use groundstation_adapter_codex as codex;
 use groundstation_adapter_opencode as opencode;
 use groundstation_adapter_pi as pi;
-use groundstation_api::{HookEnvelope, SpoolItem};
 use groundstation_hooks_json::HookSet;
+use groundstation_wire::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
 use uuid::Uuid;
 
@@ -496,13 +496,13 @@ fn opencode_version() -> Result<Option<String>> {
 /// Adapters this CLI can connect that the running gsd doesn't know: it
 /// predates them and must be restarted to accept their hooks.
 /// The daemon's pid for messages; gsd always reports it.
-fn pid(health: &groundstation_api::Health) -> String {
+fn pid(health: &groundstation_wire::Health) -> String {
     health
         .pid
         .map_or_else(|| "unknown".into(), |p| p.to_string())
 }
 
-fn missing_adapters(health: &groundstation_api::Health) -> Vec<&'static str> {
+fn missing_adapters(health: &groundstation_wire::Health) -> Vec<&'static str> {
     AgentName::value_variants()
         .iter()
         .map(|a| a.adapter())

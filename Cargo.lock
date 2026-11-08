@@ -576,9 +576,9 @@ dependencies = [
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
  "groundstation-adapter-pi",
- "groundstation-api",
  "groundstation-hooks-json",
  "groundstation-schema",
+ "groundstation-wire",
  "gsd",
  "open",
  "reqwest",
@@ -643,17 +643,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "groundstation-api"
-version = "0.1.2"
-dependencies = [
- "chrono",
- "groundstation-schema",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "groundstation-hooks-json"
 version = "0.1.2"
 dependencies = [
@@ -673,6 +662,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-wire"
+version = "0.1.2"
+dependencies = [
+ "chrono",
+ "groundstation-schema",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "gsd"
 version = "0.1.2"
 dependencies = [
@@ -686,8 +686,8 @@ dependencies = [
  "groundstation-adapter-codex",
  "groundstation-adapter-opencode",
  "groundstation-adapter-pi",
- "groundstation-api",
  "groundstation-schema",
+ "groundstation-wire",
  "hex",
  "http-body-util",
  "regex",

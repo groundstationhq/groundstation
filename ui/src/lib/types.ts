@@ -1,6 +1,6 @@
 /**
  * Wire types. Mirror `crates/schema` (groundstation.telemetry.v0) and
- * `crates/api` exactly. Change them in the same PR as the Rust side.
+ * `crates/wire` exactly. Change them in the same PR as the Rust side.
  */
 
 export const SCHEMA = "groundstation.telemetry.v0";
@@ -93,7 +93,7 @@ export const attr = {
   NOTIFICATION_MESSAGE: "gs.notification.message",
 } as const;
 
-/** `GET /v1/health`. Mirrors `Health` in crates/api. Fields that describe one machine's daemon are absent on the hosted backend. */
+/** `GET /v1/health`. Mirrors `Health` in crates/wire. Fields that describe one machine's daemon are absent on the hosted backend. */
 export interface Health {
   status: string;
   /** Which host is answering; absent from gsd builds older than this field. */
@@ -124,7 +124,7 @@ export interface UploadStatus {
   last_error?: { message: string; at: string };
 }
 
-/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/api. */
+/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/wire. */
 export interface ToolStats {
   days: number;
   since: string;

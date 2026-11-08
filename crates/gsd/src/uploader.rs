@@ -16,8 +16,8 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use groundstation_api::{IngestResponse, UploadError};
 use groundstation_schema::{Batch, Event};
+use groundstation_wire::{IngestResponse, UploadError};
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
 use tokio::sync::watch;
@@ -264,8 +264,8 @@ mod tests {
     use axum::response::IntoResponse;
     use chrono::Utc;
     use flate2::read::GzDecoder;
-    use groundstation_api::Rejection;
     use groundstation_schema::{Agent, EventKind, attr};
+    use groundstation_wire::Rejection;
     use std::io::Read;
     use std::sync::Mutex;
 

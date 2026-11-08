@@ -9,8 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use groundstation_api::{ToolLatency, TrajectorySummary};
 use groundstation_schema::{Event, EventKind, attr};
+use groundstation_wire::{ToolLatency, TrajectorySummary};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 

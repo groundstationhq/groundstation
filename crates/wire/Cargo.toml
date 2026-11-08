@@ -1,5 +1,5 @@
 [package]
-name = "groundstation-api"
+name = "groundstation-wire"
 description = "Wire types of the Ground Station HTTP API, shared by gsd, the CLI and the hosted backend"
 version.workspace = true
 edition.workspace = true
