@@ -34,7 +34,7 @@ function toolDetail(e: Event): string {
   if (pat) return `"${pat}"`;
   const url = str(e, attr.HTTP_URL);
   if (url) return url;
-  const input = e.attributes[attr.TOOL_INPUT];
+  const input = e.attributes?.[attr.TOOL_INPUT];
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
     for (const k of ["command", "file_path", "path", "pattern", "query", "url", "description", "prompt"]) {
@@ -58,7 +58,7 @@ export function buildRows(d: TrajectoryDetail): Row[] {
 
   for (const e of events) {
     const t0 = ms(e.timestamp) - start;
-    const depth = e.attributes[attr.SIDECHAIN] ? 1 : 0;
+    const depth = e.attributes?.[attr.SIDECHAIN] ? 1 : 0;
     const base = { id: e.id, eventKind: e.kind, t0, open: e, depth, running: false, failed: false, durationMs: null as number | null, dims: [] as string[] };
 
     switch (e.kind) {

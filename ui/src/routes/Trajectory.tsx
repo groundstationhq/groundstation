@@ -259,7 +259,7 @@ function Value({ k, v }: { k: string; v: unknown }) {
 }
 
 function revisionOf(e: Event): string | undefined {
-  const v = e.attributes[attr.VCS_REVISION];
+  const v = e.attributes?.[attr.VCS_REVISION];
   return typeof v === "string" ? v : undefined;
 }
 
@@ -279,7 +279,7 @@ function headMoves(rows: Row[]): Set<string> {
 /** Divider marking where the checked-out commit changed mid-trajectory. */
 function HeadMoved({ row }: { row: Row }) {
   const rev = revisionOf(row.open) ?? "";
-  const branch = row.open.attributes[attr.VCS_BRANCH];
+  const branch = row.open.attributes?.[attr.VCS_BRANCH];
   return (
     <div className="mono flex items-center gap-2 px-3 py-1 text-[10.5px] text-fg-4" role="separator">
       <span className="h-px flex-1 bg-line" />
@@ -293,7 +293,7 @@ function Inspector({ row }: { row: Row }) {
   const events: Array<[string, Event]> = [["opened", row.open]];
   if (row.close) events.push(["closed", row.close]);
   const merged = new Map<string, unknown>();
-  for (const [, e] of events) for (const [k, v] of Object.entries(e.attributes)) merged.set(k, v);
+  for (const [, e] of events) for (const [k, v] of Object.entries(e.attributes ?? {})) merged.set(k, v);
   const keys = [...merged.keys()].sort();
   return (
     <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">

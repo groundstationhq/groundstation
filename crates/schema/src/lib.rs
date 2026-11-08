@@ -121,6 +121,9 @@ macro_rules! event_kinds {
         }
 
         impl EventKind {
+            /// The name of every kind this version knows.
+            pub const KNOWN: &'static [&'static str] = &[$($name,)*];
+
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $name,)*

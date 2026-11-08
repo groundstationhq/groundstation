@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 pub use groundstation_schema::HookEnvelope;
 
+pub mod insights;
+pub mod summary;
+
 /// What the hook writes to the spool directory when the daemon is unreachable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "body", rename_all = "kebab-case")]
@@ -20,9 +23,60 @@ pub enum SpoolItem {
     Batch(Batch),
 }
 
+/// The most an event's attributes may take, serialized, for the hosted backend
+/// to store it; it refuses a larger one. gsd shortens content to fit.
+pub const MAX_EVENT_ATTRIBUTES: usize = 1 << 20;
+
+/// Prefix of the ingest tokens the hosted backend issues (then 43 base64url
+/// characters), so secret scanners can recognize them.
+pub const INGEST_TOKEN_PREFIX: &str = "gsi_";
+
+/// Whether `token` has the shape of an ingest token the backend issues.
+pub fn is_ingest_token(token: &str) -> bool {
+    token.strip_prefix(INGEST_TOKEN_PREFIX).is_some_and(|rest| {
+        rest.len() == 43
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
+/// The most characters an ingest token's label may have.
+pub const MAX_TOKEN_LABEL: usize = 100;
+
+/// Whether the backend takes `label` for an ingest token: 1 to
+/// [`MAX_TOKEN_LABEL`] characters once trimmed, with no control characters
+/// and none of the invisible ones that reorder or hide the text around them
+/// where it's shown (bidi controls, zero-width characters).
+pub fn valid_token_label(label: &str) -> bool {
+    let label = label.trim();
+    let invisible = |c: char| {
+        c.is_control()
+            || matches!(c,
+                '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    };
+    !label.is_empty() && label.chars().count() <= MAX_TOKEN_LABEL && !label.chars().any(invisible)
+}
+
+/// What the hosted api answers, with a 403, to a write that doesn't come from
+/// its own origin, an upload sent to it rather than to ingest included.
+pub const CROSS_ORIGIN_REFUSED: &str = "cross-origin request refused";
+
+/// What both hosts answer, with a 400, to a query string a `/v1` endpoint
+/// can't read. Fixed words: the parser's own would quote what was sent.
+pub const BAD_QUERY: &str = "the query string isn't what this endpoint takes";
+
+/// How far ahead of the hosted backend's clock an event's timestamp may be.
+/// Machines upload after being offline, so old timestamps are fine; a far
+/// future one is a broken clock, and the backend refuses that event.
+pub const MAX_FUTURE: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestResponse {
-    /// Events produced by this request that were new or changed.
+    /// Events this request stored. gsd counts only those that were new or
+    /// changed; the hosted backend counts every event it accepted, redeliveries
+    /// included, and deduplicates them when it reads.
     pub stored: usize,
     /// Events the receiver refused, each with the reason. The rest of the
     /// batch was accepted. gsd never rejects; the hosted backend may.
@@ -187,6 +241,33 @@ pub struct ToolLatency {
     pub max_ms: i64,
 }
 
+/// An ingest token, as `GET /v1/tokens` lists it. The token itself is shown
+/// only once, when it's created (`CreatedToken`). Hosted only (`tokens` in
+/// `Health::features`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngestToken {
+    pub id: Uuid,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// `POST /v1/tokens`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewToken {
+    pub label: String,
+}
+
+/// The answer to `POST /v1/tokens`: the token's only appearance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedToken {
+    #[serde(flatten)]
+    pub token: IngestToken,
+    /// What `gsd` sends as its bearer token (`transport.token`).
+    pub secret: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
@@ -195,6 +276,28 @@ pub struct ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_labels_are_short_visible_text() {
+        assert!(valid_token_label(" work laptop "));
+        assert!(valid_token_label(&"é".repeat(MAX_TOKEN_LABEL)));
+        for bad in [
+            String::new(),
+            "   ".into(),
+            "é".repeat(MAX_TOKEN_LABEL + 1),
+            "my\tlaptop".into(),
+            "laptop\u{202E}potpal".into(),
+            "a\u{2067}b".into(),
+            "zero\u{200B}width".into(),
+        ] {
+            assert!(!valid_token_label(&bad), "{bad:?}");
+        }
+        let token = format!("gsi_{}", "aB3-_".repeat(9).get(..43).unwrap());
+        assert!(is_ingest_token(&token));
+        assert!(!is_ingest_token(&token[..token.len() - 1]));
+        assert!(!is_ingest_token(&format!("\"{token}\"")));
+        assert!(!is_ingest_token("0199a4a2-6c1e-7d3c-9b2a-1f2e3d4c5b6a"));
+    }
 
     #[test]
     fn health_reads_older_daemons_and_the_hosted_backend() {
