@@ -48,7 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      # The UI is embedded into gsd by its build script when ui/dist exists.
+      # crates/ui-embed's build script embeds the UI in gsd when ui/dist exists.
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -64,6 +64,9 @@ jobs:
         if: matrix.cross
         uses: taiki-e/install-action@cross
       - name: Build
+        env:
+          # The UI was built above: fail rather than ship the placeholder page.
+          GS_UI_REQUIRED: 1
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build --release --locked --target ${{ matrix.target }} -p groundstation -p gsd

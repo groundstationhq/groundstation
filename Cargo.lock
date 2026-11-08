@@ -662,6 +662,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-ui-embed"
+version = "0.1.2"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "rust-embed",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "groundstation-wire"
 version = "0.1.2"
 dependencies = [
@@ -687,13 +698,13 @@ dependencies = [
  "groundstation-adapter-opencode",
  "groundstation-adapter-pi",
  "groundstation-schema",
+ "groundstation-ui-embed",
  "groundstation-wire",
  "hex",
  "http-body-util",
  "regex",
  "reqwest",
  "rusqlite",
- "rust-embed",
  "serde",
  "serde_json",
  "sha2",

@@ -16,7 +16,6 @@ pub mod privacy;
 pub mod server;
 pub mod spool;
 pub mod store;
-pub mod ui;
 pub mod uploader;
 
 use std::sync::Arc;

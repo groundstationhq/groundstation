@@ -1,0 +1,4 @@
+# cross builds inside a container, which gets only the variables named here.
+[build.env]
+# The release build requires the UI (crates/ui-embed/build.rs).
+passthrough = ["GS_UI_REQUIRED"]

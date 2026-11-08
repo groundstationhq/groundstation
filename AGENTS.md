@@ -28,7 +28,7 @@ Every change is a branch and a pull request into `main`, squash-merged once CI i
 - Never log or persist content attributes (`gs.prompt.text`, tool bodies, `gs.shell.command`) outside the store, and never log tokens. Redaction runs in `gsd` before storage; nothing may bypass it.
 - Event ids must be stable across redelivery. Derive them from the source; never mint one at ingest.
 - Attribute keys come from `groundstation_schema::attr`; don't write the string twice.
-- `cargo build` must keep working without Node. The UI is embedded by `crates/gsd/build.rs` when `ui/dist` exists and replaced by a placeholder page when it doesn't.
+- `cargo build` must keep working without Node. The UI is embedded by `crates/ui-embed/build.rs` when `ui/dist` exists and replaced by a placeholder page when it doesn't.
 
 ## Map
 

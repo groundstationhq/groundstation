@@ -15,6 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The UI is built below; fail rather than test the placeholder page.
+      GS_UI_REQUIRED: 1
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

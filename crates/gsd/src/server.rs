@@ -46,11 +46,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/trajectories/{id}", get(get_trajectory))
         .route("/v1/stats/tools", get(tool_stats))
         .route("/v1/shutdown", post(shutdown))
-        .fallback(crate::ui::serve)
+        .fallback(groundstation_ui_embed::serve)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn(move |req, next| {
             check_host(listen, req, next)
         }))
+        .layer(middleware::from_fn(groundstation_ui_embed::no_store))
         .with_state(state)
 }
 
@@ -83,7 +84,7 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
         status: "ok".into(),
         deployment: Deployment::Local,
         features: Vec::new(),
-        ui: crate::ui::EMBEDDED,
+        ui: groundstation_ui_embed::EMBEDDED,
         adapters: s
             .ingestor
             .adapter_names()
@@ -424,6 +425,23 @@ mod tests {
 
         let (_, body) = call(&app, "GET", "/v1/stats/tools?days=9999", host, None).await;
         assert_eq!(body["days"], 365);
+    }
+
+    #[tokio::test]
+    async fn api_answers_are_never_cached() {
+        let app = app();
+        for (uri, host) in [
+            ("/v1/health", "127.0.0.1:4318"),
+            ("/v1/trajectories/nope", "127.0.0.1:4318"),
+            ("/v1/health", "evil.example:4318"),
+        ] {
+            let req = Request::get(uri)
+                .header("host", host)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.headers()["cache-control"], "no-store", "{uri} {host}");
+        }
     }
 
     #[tokio::test]

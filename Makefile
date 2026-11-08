@@ -33,12 +33,13 @@ ui-dev: ## Vite dev server with hot reload at http://localhost:5180/, proxied to
 	$(NPM) install --no-audit --no-fund
 	$(NPM) run dev
 
-check: ## What CI runs: fmt, clippy, tests, UI typecheck and build
-	cargo fmt --all --check
-	cargo clippy --workspace --all-targets
-	cargo test --workspace
-	$(NPM) run typecheck
+check: ## What CI runs: the UI built first (and required), then fmt, clippy, tests, UI typecheck
+	$(NPM) ci --no-audit --no-fund
 	$(NPM) run build
+	cargo fmt --all --check
+	GS_UI_REQUIRED=1 cargo clippy --workspace --all-targets
+	GS_UI_REQUIRED=1 cargo test --workspace
+	$(NPM) run typecheck
 
 build: ## Release build of groundstation and gsd with the UI embedded
 	$(NPM) install --no-audit --no-fund
