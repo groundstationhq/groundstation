@@ -960,6 +960,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-worker"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clickhouse",
+ "groundstation-backend",
+ "groundstation-schema",
+ "groundstation-wire",
+ "serde",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gsd"
 version = "0.1.2"
 dependencies = [
