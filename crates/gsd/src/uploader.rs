@@ -23,9 +23,10 @@ use reqwest::header::RETRY_AFTER;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::config::{Config, PathPolicy};
+use crate::config::Config;
 use crate::outbound;
-use crate::store::Store;
+use crate::privacy::Privacy;
+use crate::store::{Sent, Store};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
@@ -56,15 +57,18 @@ impl UploadState {
                 })
             }
             // Handled by splitting the batch; not a failure anyone needs to see.
-            Err(Failure::TooLarge) => {}
+            Err(Failure::TooLarge { .. }) => {}
         }
     }
 }
 
 /// Uploads until shutdown. Returns immediately in `local-only` mode.
+/// `privacy` is `[redaction]` as it is now, applied again to each event as it
+/// leaves, so events stored under other settings leave under these.
 pub async fn run(
     config: Arc<Config>,
     store: Arc<Store>,
+    privacy: Privacy,
     state: UploadState,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -75,18 +79,13 @@ pub async fn run(
     let token = transport.token.as_deref();
     let batch_size = transport.batch_size.max(1);
     let url = format!("{}/v1/events", endpoint.trim_end_matches('/'));
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent(concat!("gsd/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
+    let client = match client() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("uploader disabled: {e:#}");
             return;
         }
     };
-    let paths = config.redaction.paths;
     let interval = Duration::from_secs(transport.flush_interval_secs.max(1));
     let mut backoff = interval;
     // Shrinks when the backend says a batch is too large, grows back on success.
@@ -94,7 +93,7 @@ pub async fn run(
     tracing::info!(%url, "uploading events");
 
     loop {
-        let result = flush(&client, &url, token, &store, limit, paths).await;
+        let result = flush(&client, &url, token, &store, limit, &privacy).await;
         state.record(&result);
         let wait = match result {
             Ok(sent) => {
@@ -103,8 +102,8 @@ pub async fn run(
                 limit = (limit * 2).min(batch_size);
                 if full { Duration::ZERO } else { interval } // full: more waiting
             }
-            Err(Failure::TooLarge) => {
-                limit = (limit / 2).max(1);
+            Err(Failure::TooLarge { sent }) => {
+                limit = (sent / 2).max(1);
                 tracing::debug!(limit, "backend refused the batch as too large, splitting");
                 Duration::ZERO
             }
@@ -119,17 +118,27 @@ pub async fn run(
             _ = tokio::time::sleep(wait) => {}
             _ = shutdown.changed() => {
                 // One last attempt so a clean shutdown doesn't strand a batch.
-                let _ = flush(&client, &url, token, &store, limit, paths).await;
+                let _ = flush(&client, &url, token, &store, limit, &privacy).await;
                 return;
             }
         }
     }
 }
 
+fn client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("gsd/", env!("CARGO_PKG_VERSION")))
+        // A redirect turns the POST into a GET of some other page; following
+        // it could read as a stored batch that never reached ingest.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
 #[derive(Debug)]
 enum Failure {
-    /// 413 for a batch of more than one event: retry with fewer.
-    TooLarge,
+    /// 413 for a batch of `sent` events, more than one: retry with fewer.
+    TooLarge { sent: usize },
     /// Network errors, auth, rate limits, server errors: nothing wrong with
     /// the events themselves, so they stay queued and nothing counts against them.
     Transient {
@@ -155,7 +164,7 @@ async fn flush(
     token: Option<&str>,
     store: &Arc<Store>,
     limit: usize,
-    paths: PathPolicy,
+    privacy: &Privacy,
 ) -> Result<usize, Failure> {
     let s = store.clone();
     let pending = blocking(move || s.pending_upload(limit.max(1))).await?;
@@ -163,11 +172,12 @@ async fn flush(
         return Ok(0);
     }
     let sent = pending.len();
-    let mut seqs: HashMap<Uuid, i64> = pending.iter().map(|p| (p.event.id, p.seq)).collect();
+    let mut versions: HashMap<Uuid, Sent> =
+        pending.iter().map(|p| (p.event.id, p.sent())).collect();
     let events = pending
         .into_iter()
         .map(|mut p| {
-            outbound::prepare(&mut p.event, &p.place, paths);
+            outbound::prepare(&mut p.event, &p.place, privacy);
             p.event
         })
         .collect();
@@ -186,15 +196,20 @@ async fn flush(
 
     let rejected: Vec<(Uuid, String)> = if status == StatusCode::PAYLOAD_TOO_LARGE {
         if sent > 1 {
-            return Err(Failure::TooLarge);
+            return Err(Failure::TooLarge { sent });
         }
         // One event the backend won't take at any batch size.
-        seqs.keys()
+        versions
+            .keys()
             .map(|id| (*id, "too large for the backend".to_string()))
             .collect()
     } else if status.is_success() {
-        // A backend that doesn't itemize refusals accepted everything.
-        let reply: IngestResponse = resp.json().await.unwrap_or_default();
+        // Only an ingest response says what was stored: a 2xx page from
+        // something else in between (a sign-in proxy) stored nothing.
+        let reply: IngestResponse = resp.json().await.map_err(|e| Failure::Transient {
+            error: anyhow!("backend answered {status} without an ingest response: {e}"),
+            retry_after: None,
+        })?;
         reply
             .rejected
             .into_iter()
@@ -214,12 +229,12 @@ async fn flush(
 
     let mut refused = Vec::with_capacity(rejected.len());
     for (id, error) in &rejected {
-        if let Some(seq) = seqs.remove(id) {
+        if let Some(version) = versions.remove(id) {
             tracing::warn!(event = %id, error = %clip(error), "backend refused event");
-            refused.push(seq);
+            refused.push(version);
         }
     }
-    let accepted: Vec<i64> = seqs.into_values().collect();
+    let accepted: Vec<Sent> = versions.into_values().collect();
     let s = store.clone();
     let dropped = blocking(move || {
         s.mark_uploaded(&accepted)?;
@@ -300,6 +315,20 @@ mod tests {
         (format!("http://{addr}/v1/events"), received)
     }
 
+    /// The default `[redaction]`.
+    fn keep() -> Privacy {
+        Privacy::with_env(&Config::default(), []).unwrap()
+    }
+
+    /// What ingest answers when it stored the whole batch.
+    fn stored(batch: &Batch) -> axum::response::Response {
+        axum::Json(IngestResponse {
+            stored: batch.events.len(),
+            rejected: Vec::new(),
+        })
+        .into_response()
+    }
+
     fn store_with(n: usize) -> (Arc<Store>, Vec<Uuid>) {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let events: Vec<NewEvent> = (0..n)
@@ -322,24 +351,24 @@ mod tests {
 
     #[tokio::test]
     async fn uploads_compressed_batches_and_marks_them() {
-        let (url, received) = backend(|_| "ok".into_response()).await;
+        let (url, received) = backend(stored).await;
         let (store, _) = store_with(3);
         let client = reqwest::Client::new();
 
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+            flush(&client, &url, Some("tok"), &store, 2, &keep())
                 .await
                 .unwrap(),
             2
         );
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+            flush(&client, &url, Some("tok"), &store, 2, &keep())
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
-            flush(&client, &url, Some("tok"), &store, 2, PathPolicy::Keep)
+            flush(&client, &url, Some("tok"), &store, 2, &keep())
                 .await
                 .unwrap(),
             0
@@ -350,6 +379,35 @@ mod tests {
         assert_eq!(received[0].0.as_deref(), Some("Bearer tok"));
         assert_eq!(received[0].1.schema, groundstation_schema::SCHEMA);
         assert_eq!(store.counts().unwrap().pending_upload, 0);
+    }
+
+    #[tokio::test]
+    async fn events_stored_earlier_leave_under_the_settings_in_force_now() {
+        let (url, received) = backend(stored).await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut event = Event::new(
+            Uuid::now_v7(),
+            "t",
+            EventKind::TurnUser,
+            Utc::now(),
+            Agent::named("x"),
+        );
+        event.set(attr::PROMPT_TEXT, "kept while local-only");
+        store
+            .insert(vec![NewEvent {
+                event,
+                raw: None,
+                host: None,
+            }])
+            .unwrap();
+        let mut now = Config::default();
+        now.redaction.exclude = vec!["prompt".into()];
+        let now = Privacy::with_env(&now, []).unwrap();
+        flush(&reqwest::Client::new(), &url, None, &store, 10, &now)
+            .await
+            .unwrap();
+        let received = received.lock().unwrap();
+        assert_eq!(received[0].1.events[0].get(attr::PROMPT_TEXT), None);
     }
 
     #[tokio::test]
@@ -376,12 +434,12 @@ mod tests {
         let client = reqwest::Client::new();
 
         // The refused event goes back in the queue; the others are done.
-        flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+        flush(&client, &url, None, &store, 10, &keep())
             .await
             .unwrap();
         assert_eq!(store.counts().unwrap().pending_upload, 1);
         for _ in 1..MAX_ATTEMPTS {
-            flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+            flush(&client, &url, None, &store, 10, &keep())
                 .await
                 .unwrap();
         }
@@ -390,7 +448,7 @@ mod tests {
         assert_eq!(counts.dropped_upload, 1);
         assert_eq!(counts.events, 3, "dropped events stay in the store");
         assert_eq!(
-            flush(&client, &url, None, &store, 10, PathPolicy::Keep)
+            flush(&client, &url, None, &store, 10, &keep())
                 .await
                 .unwrap(),
             0
@@ -404,7 +462,7 @@ mod tests {
             if batch.events.len() > 1 {
                 StatusCode::PAYLOAD_TOO_LARGE.into_response()
             } else {
-                "ok".into_response()
+                stored(batch)
             }
         })
         .await;
@@ -412,11 +470,11 @@ mod tests {
         let client = reqwest::Client::new();
 
         assert!(matches!(
-            flush(&client, &url, None, &store, 2, PathPolicy::Keep).await,
-            Err(Failure::TooLarge)
+            flush(&client, &url, None, &store, 2, &keep()).await,
+            Err(Failure::TooLarge { sent: 2 })
         ));
         assert_eq!(
-            flush(&client, &url, None, &store, 1, PathPolicy::Keep)
+            flush(&client, &url, None, &store, 1, &keep())
                 .await
                 .unwrap(),
             1
@@ -432,7 +490,7 @@ mod tests {
 
         for _ in 0..MAX_ATTEMPTS + 1 {
             assert!(matches!(
-                flush(&client, &url, None, &store, 10, PathPolicy::Keep).await,
+                flush(&client, &url, None, &store, 10, &keep()).await,
                 Err(Failure::Transient { .. })
             ));
         }
@@ -447,12 +505,12 @@ mod tests {
         let client = reqwest::Client::new();
         let state = UploadState::default();
 
-        state.record(&flush(&client, &url, None, &store, 10, PathPolicy::Keep).await);
+        state.record(&flush(&client, &url, None, &store, 10, &keep()).await);
         let error = state.last_error().expect("a failure is recorded");
         assert!(error.message.contains("401"), "{}", error.message);
 
         // Splitting a batch isn't a failure; it leaves the last error alone.
-        state.record(&Err(Failure::TooLarge));
+        state.record(&Err(Failure::TooLarge { sent: 2 }));
         assert!(state.last_error().is_some());
         state.record(&Ok(1));
         assert_eq!(state.last_error(), None);
@@ -460,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn uploads_say_where_within_the_repository_not_on_disk() {
-        let (url, received) = backend(|_| "ok".into_response()).await;
+        let (url, received) = backend(stored).await;
         let store = Arc::new(Store::open_in_memory().unwrap());
         let mut event = Event::new(
             Uuid::now_v7(),
@@ -482,16 +540,9 @@ mod tests {
             .set_repository("t", "/Users/ana/src/shop", Some("github.com/acme/shop"))
             .unwrap();
 
-        flush(
-            &reqwest::Client::new(),
-            &url,
-            None,
-            &store,
-            10,
-            PathPolicy::Keep,
-        )
-        .await
-        .unwrap();
+        flush(&reqwest::Client::new(), &url, None, &store, 10, &keep())
+            .await
+            .unwrap();
         let received = received.lock().unwrap();
         let sent = &received[0].1.events[0];
         assert_eq!(
@@ -520,11 +571,85 @@ mod tests {
         let (store, _) = store_with(1);
         let client = reqwest::Client::new();
 
-        match flush(&client, &url, None, &store, 10, PathPolicy::Keep).await {
+        match flush(&client, &url, None, &store, 10, &keep()).await {
             Err(Failure::Transient { retry_after, .. }) => {
                 assert_eq!(retry_after, Some(Duration::from_secs(7)))
             }
             other => panic!("expected a transient failure, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn only_an_ingest_response_marks_a_batch_uploaded() {
+        // A page from something in between, such as a sign-in proxy.
+        let (url, _) = backend(|_| "<html>sign in</html>".into_response()).await;
+        let (store, _) = store_with(2);
+        let result = flush(&client().unwrap(), &url, None, &store, 10, &keep()).await;
+        assert!(
+            matches!(result, Err(Failure::Transient { .. })),
+            "{result:?}"
+        );
+        assert_eq!(store.counts().unwrap().pending_upload, 2);
+
+        // A redirect isn't followed: it turns the POST into a GET, which no
+        // ingest stores, whatever the page it reaches says.
+        let page = axum::Router::new().route(
+            "/",
+            axum::routing::get(|| async { axum::Json(IngestResponse::default()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let page_url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, page).await.unwrap() });
+        let (url, _) =
+            backend(move |_| axum::response::Redirect::to(&page_url).into_response()).await;
+        let result = flush(&client().unwrap(), &url, None, &store, 10, &keep()).await;
+        assert!(
+            matches!(result, Err(Failure::Transient { .. })),
+            "{result:?}"
+        );
+        assert_eq!(store.counts().unwrap().pending_upload, 2);
+    }
+
+    #[tokio::test]
+    async fn an_update_during_an_upload_goes_in_the_next_batch() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut model = Event::new(
+            Uuid::now_v7(),
+            "t",
+            EventKind::ModelCompleted,
+            Utc::now(),
+            Agent::named("x"),
+        );
+        model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
+        let new = |event: &Event| NewEvent {
+            event: event.clone(),
+            raw: None,
+            host: None,
+        };
+        store.insert(vec![new(&model)]).unwrap();
+        let (local, update) = (store.clone(), model.clone());
+        let (url, received) = backend(move |batch| {
+            // The transcript grows while the first version is on its way.
+            let mut update = update.clone();
+            update.set(attr::GEN_AI_OUTPUT_TOKENS, 4242);
+            local.insert(vec![new(&update)]).unwrap();
+            stored(batch)
+        })
+        .await;
+        let client = client().unwrap();
+        flush(&client, &url, None, &store, 10, &keep())
+            .await
+            .unwrap();
+        assert_eq!(store.counts().unwrap().pending_upload, 1);
+        flush(&client, &url, None, &store, 10, &keep())
+            .await
+            .unwrap();
+        let received = received.lock().unwrap();
+        let tokens = |i: usize| {
+            received[i].1.events[0]
+                .get(attr::GEN_AI_OUTPUT_TOKENS)
+                .cloned()
+        };
+        assert_eq!((tokens(0), tokens(1)), (Some(1.into()), Some(4242.into())));
     }
 }

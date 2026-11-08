@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
@@ -171,8 +172,9 @@ struct ListParams {
 
 async fn list_trajectories(
     State(s): State<AppState>,
-    Query(params): Query<ListParams>,
+    params: Result<Query<ListParams>, QueryRejection>,
 ) -> Result<Json<Vec<TrajectorySummary>>, ApiError> {
+    let Query(params) = params?;
     let store = s.ingestor.store.clone();
     let limit = params.limit.unwrap_or(50).clamp(1, 10_000);
     Ok(Json(
@@ -210,8 +212,9 @@ struct StatsParams {
 
 async fn tool_stats(
     State(s): State<AppState>,
-    Query(params): Query<StatsParams>,
+    params: Result<Query<StatsParams>, QueryRejection>,
 ) -> Result<Json<ToolStats>, ApiError> {
+    let Query(params) = params?;
     let days = params.days.unwrap_or(14).clamp(1, 365);
     let since = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
     let since_ns = since.timestamp_nanos_opt().unwrap_or(0);
@@ -243,6 +246,14 @@ pub struct ApiError(StatusCode, String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(ErrorBody { error: self.1 })).into_response()
+    }
+}
+
+/// A query string the endpoint can't read, in the same fixed words as the
+/// hosted api.
+impl From<QueryRejection> for ApiError {
+    fn from(_: QueryRejection) -> Self {
+        error(StatusCode::BAD_REQUEST, groundstation_wire::BAD_QUERY)
     }
 }
 
@@ -425,6 +436,20 @@ mod tests {
 
         let (_, body) = call(&app, "GET", "/v1/stats/tools?days=9999", host, None).await;
         assert_eq!(body["days"], 365);
+    }
+
+    #[tokio::test]
+    async fn a_bad_query_string_gets_the_json_error_any_failure_gets() {
+        let app = app();
+        for uri in ["/v1/trajectories?limit=abc", "/v1/stats/tools?days=-1"] {
+            let (status, body) = call(&app, "GET", uri, "127.0.0.1:4318", None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(
+                body["error"],
+                groundstation_wire::BAD_QUERY,
+                "{uri}: {body}"
+            );
+        }
     }
 
     #[tokio::test]
