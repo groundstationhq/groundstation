@@ -1,0 +1,42 @@
+[package]
+name = "groundstation-api"
+description = "Ground Station hosted API: serves the UI and the same /v1 read contract as gsd, per tenant"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+clickhouse = { version = "0.13.3", default-features = false, features = ["chrono", "uuid"] }
+deadpool-postgres = "0.14.2"
+futures-util = "0.3.34"
+groundstation-backend = { version = "0.1.2", path = "../backend" }
+groundstation-schema = { version = "0.1.2", path = "../schema" }
+groundstation-ui-embed = { version = "0.1.2", path = "../ui-embed" }
+groundstation-wire = { version = "0.1.2", path = "../wire" }
+hex = "0.4.3"
+openidconnect = { version = "4.0.1", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tracing = "0.1.44"
+uuid = { version = "1.26.1", features = ["v7", "serde"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+groundstation-backend = { path = "../backend", features = ["testing"] }
+gsd = { path = "../gsd" }
+http-body-util = "0.1.5"
+reqwest = { version = "0.13", default-features = false, features = ["form"] }
+tower = { version = "0.5.3", features = ["util"] }
