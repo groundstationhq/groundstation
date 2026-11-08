@@ -127,7 +127,10 @@ claude                                  # run your agent as usual; the trajector
 groundstation trajectories              # in the terminal
 groundstation ui                        # or in the browser: http://127.0.0.1:4318/
 groundstation update                    # later: install the latest release and restart gsd
+groundstation cloud login --endpoint https://gs.example.com   # optional: upload to a backend, yours or hosted
 ```
+
+The backend (ingest, the hosted API and the insights worker) is in this repository too; [`docs/backend.md`](docs/backend.md) covers running and self-hosting it.
 
 <br>
 
@@ -150,11 +153,18 @@ One repo, one Cargo workspace. The daemon, CLI, backend and UI share a single te
 ```text
 groundstation/
 ├── Cargo.toml                  workspace · edition 2024 · rust 1.88 · resolver 3
+├── docker-compose.yml          the backend's databases (and, by profile, the dev edge or a full self-hosted stack)
+├── Dockerfile                  the backend services in one image
 ├── crates/
 │   ├── schema/                 groundstation-schema: event types, identifiers, versioned telemetry schema
 │   ├── wire/                   groundstation-wire: wire types of the HTTP API, shared with the hosted backend
+│   ├── ingest/                 groundstation-ingest: the backend service gsd uploads events to
+│   ├── api/                    groundstation-api: the hosted /v1 API, sign-in, tokens and findings, serving the UI
+│   ├── worker/                 groundstation-worker: detectors that turn events into findings
+│   ├── backend/                groundstation-backend: storage and startup shared by the backend services
+│   ├── ui-embed/               the built UI, embedded by gsd and the api
 │   ├── gsd/                    local daemon (axum ingest, buffering, compression, redaction, embedded UI)
-│   ├── groundstation/          the `groundstation` CLI (connect, daemon, status, trajectories, show, ui, resync, config)
+│   ├── groundstation/          the `groundstation` CLI (connect, daemon, status, trajectories, show, ui, resync, config, cloud)
 │   └── hooks-json/             shared editing of agent hook configs (Claude Code, Codex)
 ├── adapters/
 │   ├── claude-code/            hook install + payload/transcript normalization, with sample fixtures
@@ -167,7 +177,7 @@ groundstation/
 └── README.md
 ```
 
-Coming next: backend crates over ClickHouse, and more of `docs/`.
+Coming next: more of `docs/`.
 
 ```sh
 cargo build --workspace
