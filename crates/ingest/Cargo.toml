@@ -1,0 +1,35 @@
+[package]
+name = "groundstation-ingest"
+description = "Ground Station ingest service: accepts event batches from gsd and stores them in ClickHouse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+flate2 = "1.1.10"
+groundstation-backend = { version = "0.1.2", path = "../backend" }
+groundstation-schema = { version = "0.1.2", path = "../schema" }
+groundstation-wire = { version = "0.1.2", path = "../wire" }
+http-body-util = "0.1.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = "1.26.1"
+
+[dev-dependencies]
+futures-util = "0.3.34"
+groundstation-backend = { path = "../backend", features = ["testing"] }
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

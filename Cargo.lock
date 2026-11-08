@@ -905,6 +905,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "groundstation-ingest"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "flate2",
+ "futures-util",
+ "groundstation-backend",
+ "groundstation-schema",
+ "groundstation-wire",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "groundstation-schema"
 version = "0.1.2"
 dependencies = [
