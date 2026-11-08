@@ -2,12 +2,13 @@ import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Glyph, StatusDot, kindColor } from "@/components/ui/primitives";
 import { Empty } from "@/components/Shell";
-import { trajectory } from "@/lib/api";
+import { ApiError, trajectory } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtClock, fmtDur, fmtInt, fmtTokens, shortRev, tilde } from "@/lib/format";
-import { breakdown, buildRows, fmtK, type Row } from "@/lib/spans";
-import { attr, cacheHit, promptTokens, type Event, type TrajectoryDetail } from "@/lib/types";
-import { fmtHit, hitCls } from "@/routes/Trajectories";
+import { cx, fmtClock, fmtDur, fmtInt, fmtPct, fmtStamp, fmtTokens, percentile, shortRev, tilde } from "@/lib/format";
+import { breakdown, buildRows, type Row } from "@/lib/spans";
+import { attr, cacheHit, promptTokens, str, type Event, type TrajectoryDetail } from "@/lib/types";
+import type { Async } from "@/lib/use-async";
+import { fmtHit, hitCls, statusOf } from "@/routes/Trajectories";
 import { useReducedMotion } from "@/lib/hooks";
 import { SortToggle, type Order } from "@/components/ui/SortToggle";
 
@@ -79,22 +80,23 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
   const b = useMemo(() => breakdown(rows), [rows]);
   const modelKnown = rows.some((r) => r.kind === "model" && r.durationMs != null);
   const other = Math.max(0, total - b.tool - b.model - b.sub);
+  // A span recorded past the trajectory's last event can't take more than all of it.
   const parts = [
     { k: "tools", v: b.tool, c: "var(--color-tool)" },
     { k: "model", v: b.model, c: "var(--color-model)" },
     { k: "subagents", v: b.sub, c: "var(--color-agent)" },
     { k: modelKnown ? "idle / other" : "unattributed", v: other, c: "var(--color-bg-4)" },
-  ].filter((p) => p.v > 0);
+  ].map((p) => ({ ...p, v: Math.min(p.v, total) })).filter((p) => p.v > 0);
   return (
     <div className="grid gap-x-6 gap-y-4 border-b border-line px-4 py-3 md:grid-cols-2">
       <div>
         <div className="label text-[10px]">Where the time went</div>
-        <div className="mt-2 flex h-2.5 w-full gap-[2px] overflow-hidden rounded-[3px]" role="img" aria-label={parts.map((p) => `${p.k} ${Math.round((p.v / total) * 100)}%`).join(", ")}>
+        <div className="mt-2 flex h-2.5 w-full gap-[2px] overflow-hidden rounded-[3px]" role="img" aria-label={parts.map((p) => `${p.k} ${fmtPct(p.v / total)}`).join(", ")}>
           {parts.map((p) => <div key={p.k} className="h-full rounded-[2px]" style={{ width: `${(p.v / total) * 100}%`, background: p.c }} />)}
         </div>
         <ul className="mono mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-fg-3">
           {parts.map((p) => (
-            <li key={p.k} className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-1.5 rounded-[1px]" style={{ background: p.c }} aria-hidden />{p.k} <span className="text-fg-2">{Math.round((p.v / total) * 100)}%</span></li>
+            <li key={p.k} className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-1.5 rounded-[1px]" style={{ background: p.c }} aria-hidden />{p.k} <span className="text-fg-2">{fmtPct(p.v / total)}</span></li>
           ))}
         </ul>
         {!modelKnown && <p className="mono mt-1.5 text-[10.5px] text-fg-4">This adapter reports model calls without latency, so model time is included in unattributed.</p>}
@@ -105,7 +107,7 @@ function Breakdown({ rows, total }: { rows: Row[]; total: number }) {
           {b.top.slice(0, 4).map((t) => (
             <li key={t.key} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3">
               <span className="truncate text-fg-2">{t.key}</span>
-              <span className="text-fg-4">×{t.n}{t.failed > 0 && <span className="text-err"> · {t.failed} failed</span>}</span>
+              <span className="text-fg-4">×{fmtInt(t.n)}{t.failed > 0 && <span className="text-err"> · {fmtInt(t.failed)} failed</span>}</span>
               <span className={cx("w-16 text-right", t.ms / total > 0.3 ? "text-tool" : "text-fg")}>{fmtDur(t.ms)}</span>
             </li>
           ))}
@@ -178,7 +180,7 @@ function CacheChart({ rows }: { rows: Row[] }) {
     id: c.id,
     t0: c.t0,
     v: c.hit,
-    tip: <><span className={hitCls(c.hit)}>{fmtHit(c.hit)}</span> · read {fmtK(c.tokens!.cacheRead)} · wrote {fmtK(c.tokens!.cacheWrite)}</>,
+    tip: <><span className={hitCls(c.hit)}>{fmtHit(c.hit)}</span> · read {fmtTokens(c.tokens!.cacheRead)} · wrote {fmtTokens(c.tokens!.cacheWrite)}</>,
   }));
   const dips = calls.filter((c) => c.hit != null && c.hit < 0.5);
   const worst = [...dips].sort((a, b) => (a.hit ?? 1) - (b.hit ?? 1))[0];
@@ -193,7 +195,7 @@ function CacheChart({ rows }: { rows: Row[] }) {
       ariaLabel={`Cache hit rate across ${pts.length} model calls, lowest ${fmtHit(min)}, latest ${fmtHit(last)}`}
       footer={<>
         <span>latest <span className={hitCls(last)}>{fmtHit(last)}</span> · lowest <span className={hitCls(min)}>{fmtHit(min)}</span></span>
-        {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtK(worst.tokens!.cacheWrite)}</span> : <span>no calls under 50%</span>}
+        {worst ? <span className="text-warn">{dips.length} call{dips.length > 1 ? "s" : ""} under 50% · worst at {fmtClock(worst.t0 / 1000)} re-sent {fmtTokens(worst.tokens!.cacheWrite)}</span> : <span>no calls under 50%</span>}
       </>}
     />
   );
@@ -222,10 +224,10 @@ function SpeedChart({ rows }: { rows: Row[] }) {
     id: c.id,
     t0: c.t0,
     v: c.tps,
-    tip: c.tps == null ? <span>—</span> : <><span className="text-fg">{fmtTps(c.tps)} tok/s</span> · {fmtK(c.tokens!.out)} out in {fmtDur(c.durationMs!)}</>,
+    tip: c.tps == null ? <span>—</span> : <><span className="text-fg">{fmtTps(c.tps)} tok/s</span> · {fmtTokens(c.tokens!.out)} out in {fmtDur(c.durationMs!)}</>,
   }));
   const sorted = [...valid].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)];
+  const median = percentile(sorted, 0.5);
   const totalOut = calls.reduce((n, c) => n + (c.tps != null ? c.tokens!.out : 0), 0);
   const totalSec = calls.reduce((n, c) => n + (c.tps != null ? c.durationMs! / 1000 : 0), 0);
   return (
@@ -236,7 +238,7 @@ function SpeedChart({ rows }: { rows: Row[] }) {
       ariaLabel={`Output tokens per second across ${pts.length} model calls, median ${fmtTps(median)}, range ${fmtTps(sorted[0])} to ${fmtTps(sorted[sorted.length - 1])}`}
       footer={<>
         <span>median <span className="text-fg">{fmtTps(median)}</span> · range {fmtTps(sorted[0])}–{fmtTps(sorted[sorted.length - 1])} tok/s</span>
-        <span>overall {fmtTps(totalOut / totalSec)} tok/s over {fmtK(totalOut)} out</span>
+        <span>overall {fmtTps(totalOut / totalSec)} tok/s over {fmtTokens(totalOut)} out</span>
       </>}
     />
   );
@@ -259,8 +261,7 @@ function Value({ k, v }: { k: string; v: unknown }) {
 }
 
 function revisionOf(e: Event): string | undefined {
-  const v = e.attributes?.[attr.VCS_REVISION];
-  return typeof v === "string" ? v : undefined;
+  return str(e, attr.VCS_REVISION);
 }
 
 /** Rows (in time order) whose commit differs from the row before them. */
@@ -279,7 +280,7 @@ function headMoves(rows: Row[]): Set<string> {
 /** Divider marking where the checked-out commit changed mid-trajectory. */
 function HeadMoved({ row }: { row: Row }) {
   const rev = revisionOf(row.open) ?? "";
-  const branch = row.open.attributes?.[attr.VCS_BRANCH];
+  const branch = str(row.open, attr.VCS_BRANCH);
   return (
     <div className="mono flex items-center gap-2 px-3 py-1 text-[10.5px] text-fg-4" role="separator">
       <span className="h-px flex-1 bg-line" />
@@ -289,18 +290,19 @@ function HeadMoved({ row }: { row: Row }) {
   );
 }
 
-function Inspector({ row }: { row: Row }) {
+/** `still`: the person asked for reduced motion, so the panel just appears. */
+function Inspector({ row, still }: { row: Row; still: boolean }) {
   const events: Array<[string, Event]> = [["opened", row.open]];
   if (row.close) events.push(["closed", row.close]);
   const merged = new Map<string, unknown>();
   for (const [, e] of events) for (const [k, v] of Object.entries(e.attributes ?? {})) merged.set(k, v);
   const keys = [...merged.keys()].sort();
   return (
-    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
+    <motion.div initial={still ? false : { height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={still ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }} transition={still ? { duration: 0 } : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
       <div className="mx-2 mb-2 rounded-[4px] border border-line bg-bg px-3 py-2.5 lg:ml-[86px]">
         <div className="mono mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-fg-4">
           {events.map(([label, e]) => (
-            <span key={e.id}>{label} <span className="text-fg-3">{e.kind}</span> · {new Date(e.timestamp).toLocaleTimeString([], { hour12: false })}.{String(new Date(e.timestamp).getMilliseconds()).padStart(3, "0")}</span>
+            <span key={e.id}>{label} <span className="text-fg-3">{e.kind}</span> · {fmtStamp(e.timestamp)}</span>
           ))}
           {row.open.span_id && <span>span <span className="text-fg-3">{row.open.span_id}</span></span>}
           <span>agent <span className="text-fg-3">{row.open.agent.name}{row.open.agent.version ? ` ${row.open.agent.version}` : ""}</span></span>
@@ -332,11 +334,11 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
       <span className="mono flex items-center justify-end gap-2 text-[11px] text-fg-3">
         {r.kind === "model" && r.tokens ? (
           <span className="flex items-center gap-2.5 text-[10.5px] text-fg-4">
-            <span className="hidden md:inline">prompt <span className="text-fg-2">{fmtK(promptTokens(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span></span>
-            <span className="hidden xl:inline">in·uncached <span className="text-fg-3">{fmtK(r.tokens.in)}</span></span>
-            <span className="hidden xl:inline">cache-w <span className="text-fg-3">{fmtK(r.tokens.cacheWrite)}</span></span>
-            <span className="hidden lg:inline">cache-r <span className="text-fg-3">{fmtK(r.tokens.cacheRead)}</span></span>
-            <span>out <span className="text-fg-2">{fmtK(r.tokens.out)}</span></span>
+            <span className="hidden md:inline">prompt <span className="text-fg-2">{fmtTokens(promptTokens(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span></span>
+            <span className="hidden xl:inline">in·uncached <span className="text-fg-3">{fmtTokens(r.tokens.in)}</span></span>
+            <span className="hidden xl:inline">cache-w <span className="text-fg-3">{fmtTokens(r.tokens.cacheWrite)}</span></span>
+            <span className="hidden lg:inline">cache-r <span className="text-fg-3">{fmtTokens(r.tokens.cacheRead)}</span></span>
+            <span>out <span className="text-fg-2">{fmtTokens(r.tokens.out)}</span></span>
             <span className={cx("w-9 text-right", hitCls(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead)))}>{fmtHit(cacheHit(r.tokens.in, r.tokens.cacheWrite, r.tokens.cacheRead))}</span>
           </span>
         ) : (
@@ -353,34 +355,25 @@ function EventRow({ r, maxMs, open, onToggle }: { r: Row; maxMs: number; open: b
   );
 }
 
-const STATUS: Record<string, { dot: "running" | "ok" | "err" | "idle"; label: string; cls: string }> = {
-  running: { dot: "running", label: "Running", cls: "text-model" },
-  idle: { dot: "idle", label: "Idle", cls: "text-fg-3" },
-  waiting: { dot: "idle", label: "Waiting", cls: "text-fg-3" },
-  completed: { dot: "ok", label: "Complete", cls: "text-fg-2" },
-  failed: { dot: "err", label: "Failed", cls: "text-err" },
-  cancelled: { dot: "idle", label: "Cancelled", cls: "text-fg-3" },
-};
-
 interface Stat { k: string; v: ReactNode }
 
 function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<Filter, number>; filtering: Filtering }) {
   const commits = new Set(d.events.map((e) => revisionOf(e)).filter(Boolean)).size;
-  const s = STATUS[d.status] ?? { dot: "idle" as const, label: d.status, cls: "text-fg-3" };
+  const s = statusOf(d.status);
   const link = (to: Filter, text: string) => <FilterLink to={to} filtering={filtering}>{text}</FilterLink>;
   const stats: Stat[] = [
     { k: "duration", v: fmtDur(d.duration_ms) },
-    { k: "turns", v: link("user", String(d.user_turns)) },
-    { k: "model calls", v: link("model", String(d.model_calls)) },
-    { k: "tool calls", v: <>{link("tool", String(d.tool_calls))}{d.tool_errors > 0 && <> · <FilterLink to="failed" filtering={filtering} className="text-err">{d.tool_errors} failed</FilterLink></>}</> },
-    ...(counts.agent > 0 ? [{ k: "subagents", v: link("agent", String(counts.agent)) }] : []),
+    { k: "turns", v: link("user", fmtInt(d.user_turns)) },
+    { k: "model calls", v: link("model", fmtInt(d.model_calls)) },
+    { k: "tool calls", v: <>{link("tool", fmtInt(d.tool_calls))}{d.tool_errors > 0 && <> · <FilterLink to="failed" filtering={filtering} className="text-err">{fmtInt(d.tool_errors)} failed</FilterLink></>}</> },
+    ...(counts.agent > 0 ? [{ k: "subagents", v: link("agent", fmtInt(counts.agent)) }] : []),
     { k: "prompt", v: fmtTokens(promptTokens(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens)) },
     { k: "in · uncached", v: fmtTokens(d.input_tokens) },
     { k: "cache write", v: fmtTokens(d.cache_creation_tokens) },
     { k: "cache read", v: fmtTokens(d.cache_read_tokens) },
     { k: "out", v: fmtTokens(d.output_tokens) },
     { k: "cache hit", v: fmtHit(cacheHit(d.input_tokens, d.cache_creation_tokens, d.cache_read_tokens)) },
-    { k: "events", v: link("all", String(d.event_count)) },
+    { k: "events", v: link("all", fmtInt(d.event_count)) },
   ];
   return (
     <div className="mb-4">
@@ -392,7 +385,7 @@ function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<
             <span>{d.id}</span><span className="text-fg-4">/</span>
             <span>{d.agent}{d.agent_version ? ` ${d.agent_version}` : ""}</span><span className="text-fg-4">/</span>
             <span>{(d.repository ?? d.cwd) ? tilde((d.repository ?? d.cwd) as string) : "—"}{d.branch ? ` @ ${d.branch}` : ""}</span>
-            {d.revision && <><span className="text-fg-4">/</span><span title={d.revision}>{shortRev(d.revision)}{commits > 1 && <span className="text-fg-4"> · {commits} commits</span>}</span></>}
+            {d.revision && <><span className="text-fg-4">/</span><span title={d.revision}>{shortRev(d.revision)}{commits > 1 && <span className="text-fg-4"> · {fmtInt(commits)} commits</span>}</span></>}
             {d.host && <><span className="text-fg-4">/</span><span>{d.host}</span></>}
           </div>
         </div>
@@ -407,9 +400,24 @@ function Header({ d, counts, filtering }: { d: TrajectoryDetail; counts: Record<
   );
 }
 
+/**
+ * How soon to fetch the trajectory again: often while it runs, less while it
+ * waits for its agent, rarely once it has ended (a resumed one starts
+ * running again), never once it's gone.
+ */
+function refresh(last: Async<TrajectoryDetail>): number | undefined {
+  if (last.status === "error") return last.cause instanceof ApiError && last.cause.status === 404 ? undefined : 10_000;
+  if (last.status !== "ok") return 3_000;
+  switch (last.data.status) {
+    case "running": return 3_000;
+    case "idle": case "waiting": case "paused": return 10_000;
+    default: return 60_000;
+  }
+}
+
 export function Trajectory({ id }: { id: string }) {
   const reduced = useReducedMotion();
-  const st = useAsync((s) => trajectory(id, s), [id], 3_000);
+  const st = useAsync((s) => trajectory(id, s), [id], refresh);
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [order, setOrder] = useState<Order>("newest");
@@ -434,12 +442,12 @@ export function Trajectory({ id }: { id: string }) {
           <div className="flex flex-wrap gap-1" role="group" aria-label="Filter events">
             {FILTERS.filter((f) => f.id === "all" || counts[f.id] > 0).map((f) => (
               <button key={f.id} type="button" onClick={() => setFilter(f.id)} aria-pressed={filter === f.id} className={cx("whitespace-nowrap rounded-[4px] px-2 py-1 text-[11.5px] transition-colors", filter === f.id ? "bg-bg-3 text-fg" : "text-fg-3 hover:text-fg-2", f.id === "failed" && filter !== "failed" && "text-err/80 hover:text-err")}>
-                {f.label}{f.id !== "all" && <span className={cx("mono ml-1.5 text-[10.5px]", filter === f.id ? "text-fg-3" : "text-fg-4")}>{counts[f.id]}</span>}
+                {f.label}{f.id !== "all" && <span className={cx("mono ml-1.5 text-[10.5px]", filter === f.id ? "text-fg-3" : "text-fg-4")}>{fmtInt(counts[f.id])}</span>}
               </button>
             ))}
           </div>
           <div className="flex items-center gap-3">
-            <div className="mono hidden text-[10.5px] text-fg-4 sm:block">{filter === "all" ? `${shown.length} rows` : `${shown.length} of ${rows.length} rows`} · select a row to inspect</div>
+            <div className="mono hidden text-[10.5px] text-fg-4 sm:block">{filter === "all" ? `${fmtInt(shown.length)} rows` : `${fmtInt(shown.length)} of ${fmtInt(rows.length)} rows`} · select a row to inspect</div>
             <SortToggle order={order} onChange={setOrder} />
           </div>
         </div>
@@ -448,7 +456,7 @@ export function Trajectory({ id }: { id: string }) {
             <li key={r.id}>
               {order === "oldest" && moves.has(r.id) && <HeadMoved row={r} />}
               <EventRow r={r} maxMs={maxMs} open={open === r.id} onToggle={() => setOpen((o) => (o === r.id ? null : r.id))} />
-              <AnimatePresence initial={false}>{open === r.id && (reduced ? <div><Inspector row={r} /></div> : <Inspector row={r} />)}</AnimatePresence>
+              <AnimatePresence initial={false}>{open === r.id && <Inspector row={r} still={reduced} />}</AnimatePresence>
               {order === "newest" && moves.has(r.id) && <HeadMoved row={r} />}
             </li>
           ))}
