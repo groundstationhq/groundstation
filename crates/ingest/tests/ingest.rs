@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 use groundstation_backend::ch::Clickhouse;
 use groundstation_backend::config::Service;
 use groundstation_backend::pg::{tenants, tokens};
+use groundstation_backend::secret;
 use groundstation_backend::testing::{self, Databases};
 use groundstation_ingest::{AppState, Config, router};
 use groundstation_schema::{Event, EventKind, SCHEMA, attr};
@@ -43,6 +44,11 @@ async fn harness(flags: &[&str]) -> Harness {
         tenant: tenant.id,
         token,
     }
+}
+
+/// A token shaped like the ones this backend issues, which it never issued.
+fn made_up() -> String {
+    secret::generate(secret::INGEST_TOKEN_PREFIX)
 }
 
 fn gzip(data: &[u8]) -> Vec<u8> {
@@ -178,26 +184,30 @@ async fn made_up_tokens_cost_one_lookup_each_and_lookups_are_limited() {
     let h = harness(&["--lookup-rate", "1"]).await;
     let events = [testing::event("t1", EventKind::AgentStarted, Utc::now())];
     assert_eq!(h.send(&events).await.0, StatusCode::OK);
+    let (first, second) = (made_up(), made_up());
     assert_eq!(
-        h.post(Some("gsi_made_up_1"), batch(&events)).await.0,
+        h.post(Some(&first), batch(&events)).await.0,
         StatusCode::UNAUTHORIZED
     );
     // The allowance is spent: another unseen token waits...
     assert_eq!(
-        h.post(Some("gsi_made_up_2"), batch(&events)).await.0,
+        h.post(Some(&second), batch(&events)).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
     // ...while tokens already seen, known or not, are answered from memory.
     assert_eq!(
-        h.post(Some("gsi_made_up_1"), batch(&events)).await.0,
+        h.post(Some(&first), batch(&events)).await.0,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(h.send(&events).await.0, StatusCode::OK);
-    // A token that isn't shaped like one never reaches Postgres.
-    assert_eq!(
-        h.post(Some("not-a-token"), batch(&events)).await.0,
-        StatusCode::UNAUTHORIZED
-    );
+    // A token that isn't shaped like one never reaches Postgres, so it is
+    // refused, not told to wait.
+    for misshapen in ["not-a-token", "gsi_made_up"] {
+        assert_eq!(
+            h.post(Some(misshapen), batch(&events)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }
 
 #[tokio::test]
@@ -289,11 +299,8 @@ async fn a_token_in_use_is_checked_again_even_while_made_up_ones_flood_in() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     // Made-up tokens take every lookup there is...
     let mut busy = false;
-    for i in 0..4 {
-        let status = h
-            .post(Some(&format!("gsi_flood_{i}")), batch(&events))
-            .await
-            .0;
+    for _ in 0..4 {
+        let status = h.post(Some(&made_up()), batch(&events)).await.0;
         busy |= status == StatusCode::TOO_MANY_REQUESTS;
     }
     assert!(busy, "the flood used up the lookups");

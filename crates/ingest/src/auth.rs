@@ -7,19 +7,20 @@
 //! lookups in Postgres are limited across all clients.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, header};
 use groundstation_backend::pg::{self, Pool, tokens::Grant};
 use groundstation_backend::secret;
+use groundstation_wire::is_ingest_token;
 use uuid::Uuid;
 
 use crate::ratelimit::{Rate, RateLimiter};
 
 const MAX_ENTRIES: usize = 10_000;
-/// Longer than any token this backend has issued.
-const MAX_TOKEN: usize = 256;
+/// How long a token that was real stays known after it was last checked.
+const GRANT_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug)]
 pub enum AuthError {
@@ -36,10 +37,15 @@ type Answer = (Option<Grant>, Instant);
 
 pub struct Authenticator {
     pg: Pool,
-    /// Keyed by the token's hash, so the cache never holds a usable token.
-    cache: Mutex<HashMap<Vec<u8>, Answer>>,
-    ttl: Duration,
+    cache: Mutex<Cache>,
     lookups: RateLimiter,
+}
+
+/// Answers by token hash, so the cache never holds a usable token.
+struct Cache {
+    answers: HashMap<Vec<u8>, Answer>,
+    /// How long an answer is used without asking Postgres again.
+    ttl: Duration,
 }
 
 /// What the cache knows about a token.
@@ -57,19 +63,23 @@ impl Authenticator {
     pub fn new(pg: Pool, lookups: Rate, ttl: Duration) -> Self {
         Self {
             pg,
-            cache: Mutex::new(HashMap::new()),
-            ttl,
+            cache: Mutex::new(Cache {
+                answers: HashMap::new(),
+                ttl,
+            }),
             lookups: RateLimiter::new(lookups),
         }
     }
 
     pub async fn authenticate(&self, headers: &HeaderMap) -> Result<Grant, AuthError> {
         let token = bearer(headers).ok_or(AuthError::Missing)?;
-        if !well_formed(token) {
+        if !is_ingest_token(token) {
             return Err(AuthError::Unknown);
         }
         let key = secret::hash(token);
-        let grant = match self.cached(&key) {
+        // Looked up on its own line: the lock must be let go before the wait below.
+        let cached = self.cache().cached(&key);
+        let grant = match cached {
             Cached::Fresh(answer) => answer,
             cached => {
                 // Checking again a token that was real a minute ago doesn't
@@ -83,7 +93,7 @@ impl Authenticator {
                 let found = pg::tokens::authenticate(&self.pg, token)
                     .await
                     .map_err(AuthError::Unavailable)?;
-                self.remember(key, found.clone());
+                self.cache().remember(key, found.clone());
                 found
             }
         }
@@ -94,30 +104,36 @@ impl Authenticator {
         Ok(grant)
     }
 
+    fn cache(&self) -> MutexGuard<'_, Cache> {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Cache {
     fn cached(&self, key: &[u8]) -> Cached {
-        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        match cache.get(key) {
+        match self.answers.get(key) {
             Some((grant, at)) if at.elapsed() < self.ttl => Cached::Fresh(grant.clone()),
             Some((Some(_), _)) => Cached::Granted,
             _ => Cached::Unknown,
         }
     }
 
-    fn remember(&self, key: Vec<u8>, grant: Option<Grant>) {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= MAX_ENTRIES {
-            cache.retain(|_, (_, at)| at.elapsed() < self.ttl);
+    fn remember(&mut self, key: Vec<u8>, grant: Option<Grant>) {
+        if self.answers.len() >= MAX_ENTRIES {
+            // Full, which is what a flood of made-up tokens does: its old
+            // answers go. An old grant stays, because it is what lets a real
+            // token be checked again without waiting behind the flood; there
+            // are only as many as real tokens used in the last day.
+            let ttl = self.ttl;
+            self.answers.retain(|_, (grant, at)| {
+                at.elapsed() < ttl || (grant.is_some() && at.elapsed() < GRANT_KEPT)
+            });
         }
-        // A flood of made-up tokens must not push out the real ones.
-        if grant.is_some() || cache.len() < MAX_ENTRIES {
-            cache.insert(key, (grant, Instant::now()));
+        // Nor may the flood keep the real ones out.
+        if grant.is_some() || self.answers.len() < MAX_ENTRIES {
+            self.answers.insert(key, (grant, Instant::now()));
         }
     }
-}
-
-/// Whether `token` could be one this backend issued.
-fn well_formed(token: &str) -> bool {
-    token.starts_with(secret::INGEST_TOKEN_PREFIX) && token.len() <= MAX_TOKEN
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -146,9 +162,39 @@ mod tests {
     }
 
     #[test]
+    fn a_flood_of_made_up_tokens_never_pushes_out_a_real_one() {
+        // Every answer is old at once.
+        let mut cache = Cache {
+            answers: HashMap::new(),
+            ttl: Duration::ZERO,
+        };
+        let grant = Grant {
+            token_id: Uuid::now_v7(),
+            tenant_id: Uuid::now_v7(),
+            retention_days: 30,
+            suspended: false,
+        };
+        let real = secret::hash("real");
+        cache.remember(real.clone(), Some(grant));
+        for i in 0..2 * MAX_ENTRIES {
+            cache.remember(secret::hash(&format!("made up {i}")), None);
+        }
+        assert!(cache.answers.len() <= MAX_ENTRIES);
+        // Still known to have been real: its next check skips the limiter.
+        assert!(matches!(cache.cached(&real), Cached::Granted));
+        assert!(matches!(
+            cache.cached(&secret::hash("made up 0")),
+            Cached::Unknown
+        ));
+    }
+
+    #[test]
     fn only_tokens_of_the_issued_shape_are_looked_up() {
-        assert!(well_formed(&secret::generate(secret::INGEST_TOKEN_PREFIX)));
-        assert!(!well_formed("gss_a_session_id"));
-        assert!(!well_formed(&format!("gsi_{}", "x".repeat(MAX_TOKEN))));
+        assert!(is_ingest_token(&secret::generate(
+            secret::INGEST_TOKEN_PREFIX
+        )));
+        assert!(!is_ingest_token("gss_a_session_id"));
+        assert!(!is_ingest_token("gsi_made_up"));
+        assert!(!is_ingest_token(&format!("gsi_{}", "x".repeat(256))));
     }
 }
