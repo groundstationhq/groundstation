@@ -72,6 +72,9 @@ CREATE TABLE transcripts (
     // The repository's name outside this machine: its origin remote, or the
     // directory name.
     "ALTER TABLE trajectories ADD COLUMN origin TEXT;",
+    // How many times an event was updated after it was first stored, so an
+    // upload can tell whether what it sent is still what is stored.
+    "ALTER TABLE events ADD COLUMN version INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Store {
@@ -90,15 +93,15 @@ pub struct Pending {
     pub seq: i64,
     pub event: Event,
     pub place: Place,
-    /// The attributes as stored when the event was read.
-    attributes: String,
+    /// The event's version when it was read.
+    version: i64,
 }
 
 impl Pending {
     pub fn sent(&self) -> Sent {
         Sent {
             seq: self.seq,
-            attributes: self.attributes.clone(),
+            version: self.version,
         }
     }
 }
@@ -107,10 +110,10 @@ impl Pending {
 /// only while it is still that version: an updated `model.completed` keeps its
 /// place in the queue, and an update that lands while the old version is on
 /// its way must be sent too.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sent {
     pub seq: i64,
-    attributes: String,
+    version: i64,
 }
 
 /// Where a trajectory ran, as stored locally (under the path policy).
@@ -222,7 +225,8 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                      ts_ns = excluded.ts_ns, attributes = excluded.attributes,
-                     agent_version = excluded.agent_version, uploaded = 0, upload_attempts = 0
+                     agent_version = excluded.agent_version, uploaded = 0, upload_attempts = 0,
+                     version = events.version + 1
                  WHERE excluded.kind = 'model.completed' AND events.attributes != excluded.attributes",
                 params![
                     event.id.to_string(),
@@ -411,23 +415,23 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT e.seq, {columns}, t.repository, t.origin
+            "SELECT e.seq, {columns}, e.version, t.repository, t.origin
              FROM events e LEFT JOIN trajectories t ON t.id = e.trajectory_id
              WHERE e.uploaded = 0 ORDER BY e.seq LIMIT ?1"
         ))?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let seq: i64 = row.get(0)?;
-            let attributes: String = row.get(9)?;
+            let version: i64 = row.get(10)?;
             let place = Place {
-                repository: row.get(10)?,
-                origin: row.get(11)?,
+                repository: row.get(11)?,
+                origin: row.get(12)?,
             };
             event_from_row_at(row, 1).map(|r| {
                 r.map(|event| Pending {
                     seq,
                     event,
                     place,
-                    attributes,
+                    version,
                 })
             })
         })?;
@@ -440,9 +444,9 @@ impl Store {
         let tx = conn.transaction()?;
         {
             let mut stmt =
-                tx.prepare("UPDATE events SET uploaded = 1 WHERE seq = ?1 AND attributes = ?2")?;
+                tx.prepare("UPDATE events SET uploaded = 1 WHERE seq = ?1 AND version = ?2")?;
             for s in sent {
-                stmt.execute(params![s.seq, s.attributes])?;
+                stmt.execute(params![s.seq, s.version])?;
             }
         }
         tx.commit()?;
@@ -460,11 +464,11 @@ impl Store {
             let mut stmt = tx.prepare(
                 "UPDATE events SET upload_attempts = upload_attempts + 1,
                      uploaded = CASE WHEN upload_attempts + 1 >= ?2 THEN 2 ELSE 0 END
-                 WHERE seq = ?1 AND attributes = ?3 RETURNING uploaded",
+                 WHERE seq = ?1 AND version = ?3 RETURNING uploaded",
             )?;
             for s in refused {
                 let state: Option<i64> = stmt
-                    .query_row(params![s.seq, max_attempts, s.attributes], |r| r.get(0))
+                    .query_row(params![s.seq, max_attempts, s.version], |r| r.get(0))
                     .optional()?;
                 if state == Some(2) {
                     dropped.push(s.seq);
