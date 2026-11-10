@@ -161,11 +161,6 @@ async fn each_tenant_sees_only_its_own_trajectories() {
     assert_eq!(list, Value::Array(vec![]));
     let (status, ..) = send(&app, get("/v1/trajectories/mine-1", Some(&their_session))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, _, health) = send(&app, get("/v1/health", Some(&their_session))).await;
-    assert_eq!(
-        (health["trajectories"].as_u64(), health["events"].as_u64()),
-        (Some(0), Some(0))
-    );
 }
 
 #[tokio::test]

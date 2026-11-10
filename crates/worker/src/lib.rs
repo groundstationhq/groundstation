@@ -148,7 +148,8 @@ impl Worker {
     }
 
     async fn detect(&self, tenant: &Tenant) -> anyhow::Result<Pass> {
-        let scope = self.clickhouse.tenant(tenant.id);
+        // Nobody waits for a pass: a tenant with a lot to read gets the time.
+        let scope = self.clickhouse.tenant(tenant.id).unhurried();
         let Some(latest) = latest_upload(&scope).await? else {
             return Ok(Pass::default());
         };

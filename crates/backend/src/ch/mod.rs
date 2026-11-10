@@ -27,6 +27,11 @@ pub const TENANT: &str = "{tenant:UUID}";
 pub const READ_SECONDS: u64 = 30;
 pub const READ_MEMORY: u64 = 2 << 30;
 
+/// Seconds for a read that goes at its reader's pace, not ClickHouse's
+/// ([`TenantScope::unhurried`]). ClickHouse counts the time it waits for the
+/// reader to take rows.
+pub const UNHURRIED_SECONDS: u64 = 600;
+
 #[derive(Clone)]
 pub struct Clickhouse {
     client: clickhouse::Client,
@@ -76,6 +81,7 @@ impl Clickhouse {
         TenantScope {
             client: self.client.clone(),
             tenant,
+            seconds: READ_SECONDS,
         }
     }
 
@@ -106,18 +112,17 @@ impl Clickhouse {
     }
 }
 
-/// The newest copy of each of the tenant's events matching `filter`, with
-/// `columns`. Every read of `events` goes through this: a redelivered or
-/// updated event is stored once per upload until ClickHouse merges the
-/// copies, and copies in different monthly partitions never merge. The newest
-/// upload wins, as it does in gsd. Materialized columns must be named: `*`
+/// The tenant's events matching `filter`, with `columns`: the newest copy of
+/// each. Every read of `events` goes through this: a redelivered or updated
+/// event is stored once per upload until ClickHouse merges the copies. `FINAL`
+/// has ClickHouse merge them as it reads, by the table's own rule (the copy
+/// with the latest `received_at` wins, as the newest upload does in gsd), and
+/// `filter` then sees only that copy. Materialized columns must be named: `*`
 /// leaves them out.
 pub fn deduplicated(columns: &str, filter: &str) -> String {
     format!(
-        "SELECT {columns} FROM events
-         WHERE tenant_id = {{tenant:UUID}} AND ({filter})
-         ORDER BY received_at DESC
-         LIMIT 1 BY trajectory_id, event_id"
+        "SELECT {columns} FROM events FINAL
+         WHERE tenant_id = {{tenant:UUID}} AND ({filter})"
     )
 }
 
@@ -127,11 +132,24 @@ pub fn deduplicated(columns: &str, filter: &str) -> String {
 pub struct TenantScope {
     client: clickhouse::Client,
     tenant: Uuid,
+    /// What each query may take.
+    seconds: u64,
 }
 
 impl TenantScope {
     pub fn tenant_id(&self) -> Uuid {
         self.tenant
+    }
+
+    /// The same reads, each allowed [`UNHURRIED_SECONDS`] and no more memory.
+    /// For a timeline streamed to a browser, which downloads it as fast as
+    /// its connection does, and for the worker's passes over everything a
+    /// tenant uploaded in a week, which nobody is waiting for.
+    pub fn unhurried(&self) -> Self {
+        Self {
+            seconds: UNHURRIED_SECONDS,
+            ..self.clone()
+        }
     }
 
     pub fn query(&self, sql: &str) -> Result<Query> {
@@ -145,7 +163,10 @@ impl TenantScope {
             .query(sql)
             .param("tenant", &tenant)
             .with_option("SQL_tenant_id", tenant)
-            .with_option("max_execution_time", READ_SECONDS.to_string())
+            // Copies of an event uploaded in different months are in
+            // different partitions: `FINAL` must merge across them.
+            .with_option("do_not_merge_across_partitions_select_final", "0")
+            .with_option("max_execution_time", self.seconds.to_string())
             .with_option("max_memory_usage", READ_MEMORY.to_string())
             .with_option("max_bytes_before_external_group_by", spill.clone())
             .with_option("max_bytes_before_external_sort", spill))

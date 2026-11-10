@@ -113,7 +113,8 @@ pub struct ResyncFailure {
 }
 
 /// `GET /v1/health`. Both hosts serve it; the fields that only describe a
-/// daemon on one machine are `None` on the hosted backend.
+/// daemon on one machine, and those the hosted backend would have to query
+/// for, are `None` there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
@@ -131,8 +132,13 @@ pub struct Health {
     pub adapters: Vec<String>,
     pub version: String,
     pub schema: String,
-    pub trajectories: u64,
-    pub events: u64,
+    /// How many trajectories and events the host stores. gsd says; the hosted
+    /// backend doesn't, because counting a tenant's events means reading all
+    /// of them and health has to answer at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trajectories: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,18 +317,21 @@ mod tests {
         .unwrap();
         assert_eq!(old.deployment, Deployment::Local);
         assert_eq!(old.pid, Some(7));
+        assert_eq!((old.trajectories, old.events), (Some(1), Some(2)));
         assert_eq!(old.upload.unwrap().last_error, None);
 
         // The hosted backend leaves out what only describes one machine.
         let hosted: Health = serde_json::from_str(
             r#"{"status":"ok","deployment":"hosted","features":["insights"],"adapters":[],
-                "version":"1.0.0","schema":"groundstation.telemetry.v0","trajectories":1,"events":2}"#,
+                "version":"1.0.0","schema":"groundstation.telemetry.v0"}"#,
         )
         .unwrap();
         assert_eq!(hosted.deployment, Deployment::Hosted);
         assert_eq!(hosted.features, ["insights"]);
         assert_eq!((hosted.pid, hosted.upload.is_none()), (None, true));
+        assert_eq!((hosted.trajectories, hosted.events), (None, None));
         let json = serde_json::to_value(&hosted).unwrap();
         assert!(json.get("pid").is_none() && json.get("upload").is_none());
+        assert!(json.get("events").is_none() && json.get("trajectories").is_none());
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
 use clap::Parser;
-use groundstation_backend::ch::{Clickhouse, EventRow, schema};
+use groundstation_backend::ch::{Clickhouse, EventRow, TenantScope, deduplicated, schema};
 use groundstation_backend::config::{ClickhouseAdminArgs, PostgresArgs, Service};
 use groundstation_backend::pg::insights::{self, Finding};
 use groundstation_backend::pg::{self, Pool, tenants, tokens};
@@ -610,23 +610,62 @@ async fn postgres_errors_say_what_went_wrong() {
 async fn a_tenants_reads_are_bounded() {
     let db = databases().await;
     let tenant = testing::tenant(&db.pg).await;
-    let setting = |name: &'static str| {
-        let scope = db.api.tenant(tenant.id);
-        async move {
-            scope
-                .query(&format!(
-                    "SELECT toString(getSetting('{name}')) WHERE {{tenant:UUID}} = {{tenant:UUID}}"
-                ))
-                .unwrap()
-                .fetch_one::<String>()
-                .await
-                .unwrap()
-        }
+    let setting_of = |scope: TenantScope, name: &'static str| async move {
+        scope
+            .query(&format!(
+                "SELECT toString(getSetting('{name}')) WHERE {{tenant:UUID}} = {{tenant:UUID}}"
+            ))
+            .unwrap()
+            .fetch_one::<String>()
+            .await
+            .unwrap()
     };
+    let setting = |name| setting_of(db.api.tenant(tenant.id), name);
     assert_eq!(setting("max_execution_time").await, "30");
     assert_eq!(setting("max_memory_usage").await, (2u64 << 30).to_string());
     assert_eq!(
         setting("max_bytes_before_external_sort").await,
         (1u64 << 30).to_string()
     );
+    // A read at its reader's pace gets more time, and no more memory.
+    let unhurried = |name| setting_of(db.api.tenant(tenant.id).unhurried(), name);
+    assert_eq!(unhurried("max_execution_time").await, "600");
+    assert_eq!(
+        unhurried("max_memory_usage").await,
+        (2u64 << 30).to_string()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs `docker compose up -d --wait`"]
+async fn a_read_sees_only_the_newest_copy_of_an_event() {
+    let db = databases().await;
+    let tenant = testing::tenant(&db.pg).await;
+    let now = Utc::now();
+    // A model call uploaded three times: last month, then twice today, the
+    // last time with more tokens. The copies are in two partitions.
+    let mut call = testing::event("t1", EventKind::ModelCompleted, now);
+    for (received_at, tokens) in [
+        (now - Duration::days(40), 1),
+        (now - Duration::seconds(2), 1),
+        (now, 4242),
+    ] {
+        call.set(attr::GEN_AI_OUTPUT_TOKENS, tokens);
+        let mut stamp = testing::stamp(&tenant);
+        stamp.received_at = received_at;
+        let row = EventRow::new(&call, SCHEMA, stamp).unwrap();
+        // One insert each, so the copies start out in separate parts.
+        db.ingest.insert_events(&[row]).await.unwrap();
+    }
+    let read = |filter: &'static str| {
+        let scope = db.api.tenant(tenant.id);
+        let sql = format!(
+            "SELECT output_tokens FROM ({})",
+            deduplicated("output_tokens", filter)
+        );
+        async move { scope.query(&sql).unwrap().fetch_all::<u64>().await.unwrap() }
+    };
+    assert_eq!(read("1").await, [4242]);
+    // A filter never brings back a copy that a newer one replaced.
+    assert_eq!(read("output_tokens = 1").await, [0u64; 0]);
 }

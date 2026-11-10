@@ -33,9 +33,10 @@ pub fn routes() -> Router<AppState> {
 /// Optional endpoint groups this host serves, for the UI to feature-detect.
 pub const FEATURES: &[&str] = &["insights", "tokens"];
 
-async fn health(State(s): State<AppState>, viewer: Viewer) -> Result<Json<Health>, ApiError> {
-    let (trajectories, events) = s.counts(&viewer).await?;
-    Ok(Json(Health {
+/// Answers without reading a database, so it costs the same for any tenant
+/// and still answers while the tenant's reads are slow. Signed-in viewers only.
+async fn health(_: Viewer) -> Json<Health> {
+    Json(Health {
         status: "ok".into(),
         deployment: Deployment::Hosted,
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
@@ -44,13 +45,14 @@ async fn health(State(s): State<AppState>, viewer: Viewer) -> Result<Json<Health
         adapters: Vec::new(),
         version: env!("CARGO_PKG_VERSION").into(),
         schema: SCHEMA.into(),
-        trajectories,
-        events,
+        // Counting a tenant's events is a read of all of them.
+        trajectories: None,
+        events: None,
         pid: None,
         data_dir: None,
         spool_pending: None,
         upload: None,
-    }))
+    })
 }
 
 #[derive(Deserialize)]
@@ -63,11 +65,11 @@ async fn list(
     State(s): State<AppState>,
     viewer: Viewer,
     params: Result<Query<ListParams>, QueryRejection>,
-) -> Result<Json<Vec<TrajectorySummary>>, ApiError> {
+) -> Result<Response, ApiError> {
     let Query(params) = params?;
     let limit = params.limit.unwrap_or(50).clamp(1, 10_000) as u32;
-    let (scope, _turn) = s.read(&viewer).await?;
-    Ok(Json(trajectories::list(&scope, limit).await?))
+    let list = s.list(&viewer, limit).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], list).into_response())
 }
 
 /// Ingest stores no longer trajectory id, so a longer one matches nothing.

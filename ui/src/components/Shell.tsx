@@ -101,8 +101,12 @@ export function Shell({ children, route }: { children: ReactNode; route: string 
             {data ? (
               <>
                 <span className="hidden sm:inline">{data.deployment === "hosted" ? "Ground Station" : "gsd"} {data.version}</span>
-                <span className="hidden text-fg-4 sm:inline">·</span>
-                <span className="hidden sm:inline">{fmtInt(data.events)} events</span>
+                {data.events != null && (
+                  <>
+                    <span className="hidden text-fg-4 sm:inline">·</span>
+                    <span className="hidden sm:inline">{fmtInt(data.events)} events</span>
+                  </>
+                )}
                 <Connection data={data} />
                 {data.deployment === "hosted" && (
                   <a href="/auth/logout" className="text-fg-3 transition-colors hover:text-fg">Sign out</a>

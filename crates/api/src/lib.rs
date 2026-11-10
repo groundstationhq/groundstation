@@ -8,17 +8,19 @@ pub mod config;
 mod error;
 mod insights;
 pub mod queries;
+mod recent;
 pub mod sessions;
 mod tokens;
 mod v1;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::middleware;
 use axum::response::IntoResponse;
@@ -33,6 +35,7 @@ use crate::auth::oidc::Oidc;
 use crate::auth::{Throttle, Viewer};
 pub use crate::config::Config;
 use crate::error::ApiError;
+use crate::recent::{Busy, Recent};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -41,21 +44,16 @@ pub struct AppState {
     pub pg: Pool,
     oidc: Option<Arc<Oidc>>,
     password_attempts: Arc<Throttle>,
-    /// Per tenant: its counts and when they were taken, behind a lock that
-    /// requests missing them at once wait on, so they count only once.
-    counts: Arc<Mutex<HashMap<uuid::Uuid, CountsSlot>>>,
+    /// Per tenant and limit: the trajectory list as JSON, as last answered.
+    lists: Arc<Recent<(uuid::Uuid, u32), Bytes>>,
     /// Per tenant: reads of ClickHouse running at once.
     reads: Arc<Mutex<HashMap<uuid::Uuid, Arc<Semaphore>>>>,
 }
 
-/// A tenant's trajectories and events.
-type Counts = (u64, u64);
-/// A tenant's counts and when they were taken.
-type CountsSlot = Arc<tokio::sync::Mutex<Option<(Counts, Instant)>>>;
-
-/// How long a tenant's counts are reused. Counting reads every event id the
-/// tenant has, and every open tab asks every ten seconds.
-const COUNTS_TTL: Duration = Duration::from_secs(30);
+/// How long a tenant's trajectory list is reused. Listing summarizes every
+/// event of the trajectories it names, and every open tab asks every five
+/// seconds: within this long they all get the same answer, computed once.
+const LIST_TTL: Duration = Duration::from_secs(5);
 
 /// Reads one tenant may run at once on this instance, so no tenant takes the
 /// ClickHouse every tenant shares; and how long a read waits for its turn.
@@ -73,65 +71,38 @@ impl AppState {
             pg: pg::connect(&config.postgres)?,
             oidc: Oidc::new(&config.sign_in, &config.public_url)?.map(Arc::new),
             password_attempts: Arc::default(),
-            counts: Arc::default(),
+            lists: Arc::new(Recent::new(LIST_TTL, READ_WAIT)),
             reads: Arc::default(),
             config: Arc::new(config),
         })
     }
 
-    /// How many trajectories and events the viewer's tenant has, at most
-    /// [`COUNTS_TTL`] old. Counting takes one of the tenant's read turns only
-    /// when the cached counts are too old, and with none free, older counts
-    /// beat an error: health must answer while the tenant reads a lot.
-    async fn counts(&self, viewer: &Viewer) -> Result<Counts, ApiError> {
-        let slot = {
-            let mut all = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            if all.len() >= TENANTS_KEPT {
-                all.retain(|_, slot| Arc::strong_count(slot) > 1);
-            }
-            all.entry(viewer.tenant_id).or_default().clone()
-        };
-        let mut cached = slot.lock().await;
-        if let Some((counts, at)) = *cached
-            && at.elapsed() < COUNTS_TTL
-        {
-            return Ok(counts);
-        }
-        let (scope, _turn) = match *cached {
-            // Counts to fall back on: take a turn only if one is free now.
-            Some((older, _)) => match self.try_read(viewer) {
-                Some(read) => read,
-                None => return Ok(older),
-            },
-            None => self.read(viewer).await?,
-        };
-        let counts = queries::trajectories::counts(&scope).await?;
-        *cached = Some((counts, Instant::now()));
-        Ok(counts)
+    /// The viewer's tenant's `limit` most recently updated trajectories, as
+    /// the JSON `/v1/trajectories` answers with, at most [`LIST_TTL`] old.
+    /// Only a request that finds none that recent takes one of the tenant's
+    /// read turns; those arriving meanwhile wait for its answer, as long as
+    /// they would wait for a turn.
+    async fn list(&self, viewer: &Viewer, limit: u32) -> Result<Bytes, ApiError> {
+        self.lists
+            .get((viewer.tenant_id, limit), || async {
+                let (scope, _turn) = self.read(viewer).await?;
+                let list = queries::trajectories::list(&scope, limit).await?;
+                Ok(serde_json::to_vec(&list)
+                    .expect("summaries serialize")
+                    .into())
+            })
+            .await
     }
 
     /// Reads limited to the viewer's tenant, and a turn to run them: one of
     /// [`READS_PER_TENANT`], held until the permit is dropped.
     async fn read(&self, viewer: &Viewer) -> Result<(TenantScope, OwnedSemaphorePermit), ApiError> {
         let turns = turns_for(&self.reads, viewer.tenant_id, TENANTS_KEPT);
-        let busy = || {
-            ApiError::new(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "too many reads at once, retry shortly",
-            )
-        };
         let turn = tokio::time::timeout(READ_WAIT, turns.acquire_owned())
             .await
-            .map_err(|_| busy())?
-            .map_err(|_| busy())?;
+            .map_err(|_| Busy)?
+            .map_err(|_| Busy)?;
         Ok((self.scope(viewer), turn))
-    }
-
-    /// Like [`Self::read`], without waiting: `None` if every turn is taken.
-    fn try_read(&self, viewer: &Viewer) -> Option<(TenantScope, OwnedSemaphorePermit)> {
-        let turns = turns_for(&self.reads, viewer.tenant_id, TENANTS_KEPT);
-        let turn = turns.try_acquire_owned().ok()?;
-        Some((self.scope(viewer), turn))
     }
 
     /// Reads limited to the viewer's tenant.
@@ -144,6 +115,17 @@ impl AppState {
             new_users: self.config.sign_in.new_users,
             retention_days: self.config.retention_days,
         }
+    }
+}
+
+/// A read that waited [`READ_WAIT`] for its turn, or for another request's
+/// answer, and got neither.
+impl From<Busy> for ApiError {
+    fn from(_: Busy) -> Self {
+        Self::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "too many reads at once, retry shortly",
+        )
     }
 }
 
@@ -210,42 +192,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
     use uuid::Uuid;
 
     use super::*;
-
-    fn state() -> AppState {
-        AppState::new(Config::parse_from([
-            "api",
-            "--admin-password",
-            "a long enough password",
-        ]))
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn stale_counts_answer_at_once_while_every_read_turn_is_taken() {
-        let state = state();
-        let viewer = Viewer {
-            user_id: Uuid::now_v7(),
-            tenant_id: Uuid::now_v7(),
-            admin: true,
-        };
-        let stale = Instant::now() - COUNTS_TTL - Duration::from_secs(1);
-        state.counts.lock().unwrap().insert(
-            viewer.tenant_id,
-            Arc::new(tokio::sync::Mutex::new(Some(((5, 7), stale)))),
-        );
-        let _every_turn = turns_for(&state.reads, viewer.tenant_id, TENANTS_KEPT)
-            .acquire_many_owned(READS_PER_TENANT as u32)
-            .await
-            .unwrap();
-        let started = Instant::now();
-        assert_eq!(state.counts(&viewer).await.unwrap(), (5, 7));
-        let waited = started.elapsed();
-        assert!(waited < Duration::from_secs(1), "health waited {waited:?}");
-    }
 
     #[test]
     fn turns_a_request_holds_are_never_forgotten() {

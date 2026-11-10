@@ -915,10 +915,9 @@ async fn status(config: &Config) -> Result<ExitCode> {
     if let Some(dir) = &health.data_dir {
         println!("  data      {}", render::tilde(dir));
     }
-    println!(
-        "  stored    {} trajectories, {} events",
-        health.trajectories, health.events
-    );
+    if let (Some(trajectories), Some(events)) = (health.trajectories, health.events) {
+        println!("  stored    {trajectories} trajectories, {events} events");
+    }
     if let Some(n) = health.spool_pending {
         println!("  spool     {n} pending");
     }

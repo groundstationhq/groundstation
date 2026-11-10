@@ -152,7 +152,12 @@ async fn both_hosts_answer_the_same() {
 
     let (_, local_health) = local(&gsd, "GET", "/v1/health", None).await;
     let (_, _, hosted_health) = send(&api, get("/v1/health", Some(&session))).await;
-    for field in ["status", "schema", "trajectories", "events"] {
+    for field in ["status", "schema"] {
         assert_eq!(hosted_health[field], local_health[field], "health.{field}");
+    }
+    // Counting is a query on the hosted backend, so its health leaves it out.
+    for field in ["trajectories", "events"] {
+        assert!(local_health[field].is_u64(), "health.{field}");
+        assert!(hosted_health.get(field).is_none(), "health.{field}");
     }
 }

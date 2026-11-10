@@ -92,7 +92,7 @@ Claude Code / Codex ──hook (stdin JSON)──► groundstation hook <agent> 
 | `GET /v1/trajectories?limit=N` | Trajectory summaries, most recent first |
 | `GET /v1/trajectories/{id}` | One trajectory and its events (unique id prefixes work) |
 | `GET /v1/stats/tools?days=N` | Tool latency per category over the last N days (default 14): calls, failures, p50, p95 and max of `gs.duration_ms` |
-| `GET /v1/health` | Status, counters, transport mode and the last upload failure. `deployment` is `local` and `features` is empty; the hosted backend serves the same shape without the fields that describe one machine (`pid`, `data_dir`, `spool_pending`, `upload`) |
+| `GET /v1/health` | Status, counters, transport mode and the last upload failure. `deployment` is `local` and `features` is empty; the hosted backend serves the same shape without the fields that describe one machine (`pid`, `data_dir`, `spool_pending`, `upload`) and without the counters (`trajectories`, `events`), which it would have to query for |
 | `POST /v1/shutdown` | Stop the daemon |
 
 Because the daemon holds prompts and code, it only answers requests whose `Host` is a loopback name (which defeats DNS rebinding) and only accepts `application/json` bodies (browsers can't send those cross-origin without a preflight, and gsd never answers one).

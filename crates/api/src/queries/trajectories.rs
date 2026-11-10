@@ -79,13 +79,15 @@ pub async fn summary(scope: &TenantScope, id: &str) -> Result<Option<TrajectoryS
 }
 
 /// A trajectory's events in time order, a row at a time: a timeline can be
-/// far larger than anything worth holding in memory at once.
+/// far larger than anything worth holding in memory at once. Unhurried: the
+/// rows leave as fast as whoever reads them takes them, and a large timeline
+/// on a slow connection takes longer than an interactive read may.
 pub fn events(scope: &TenantScope, id: &str) -> Result<RowCursor<EventRow>> {
     let sql = format!(
         "SELECT ?fields FROM ({}) ORDER BY ts, received_at, event_id",
         deduplicated("*", "trajectory_id = {id:String}")
     );
-    Ok(scope.query(&sql)?.param("id", id).fetch()?)
+    Ok(scope.unhurried().query(&sql)?.param("id", id).fetch()?)
 }
 
 /// A trajectory's summary and all its events in time order.
@@ -102,25 +104,6 @@ pub async fn detail(
         events.push(row.to_event()?);
     }
     Ok(Some((summary, events)))
-}
-
-/// How many trajectories and events the tenant has.
-pub async fn counts(scope: &TenantScope) -> Result<(u64, u64)> {
-    let trajectories = scope
-        .query(
-            "SELECT count() FROM (SELECT trajectory_id FROM traj_index
-             WHERE tenant_id = {tenant:UUID} GROUP BY trajectory_id)",
-        )?
-        .fetch_one()
-        .await?;
-    let events = scope
-        .query(
-            "SELECT uniqExact(trajectory_id, event_id) FROM events
-             WHERE tenant_id = {tenant:UUID}",
-        )?
-        .fetch_one()
-        .await?;
-    Ok((trajectories, events))
 }
 
 /// One summary per trajectory, computed from its deduplicated events by the

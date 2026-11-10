@@ -95,7 +95,7 @@ export const attr = {
   NOTIFICATION_MESSAGE: "gs.notification.message",
 } as const;
 
-/** `GET /v1/health`. Mirrors `Health` in crates/wire. Fields that describe one machine's daemon are absent on the hosted backend. */
+/** `GET /v1/health`. Mirrors `Health` in crates/wire. Fields that describe one machine's daemon, and the counts, are absent on the hosted backend. */
 export interface Health {
   status: string;
   /** Which host is answering; absent from gsd builds older than this field. */
@@ -108,8 +108,8 @@ export interface Health {
   adapters: string[];
   version: string;
   schema: string;
-  trajectories: number;
-  events: number;
+  trajectories?: number;
+  events?: number;
   pid?: number;
   data_dir?: string;
   spool_pending?: number;
