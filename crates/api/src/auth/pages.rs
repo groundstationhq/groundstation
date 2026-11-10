@@ -3,6 +3,7 @@
 
 use axum::http::{HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
@@ -101,17 +102,17 @@ pub fn escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Percent-encodes a query value.
+/// Everything but letters, digits and `-_.~/`.
+const ENCODED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b'/');
+
+/// Percent-encodes a query value. Slashes stay, so a path reads as one.
 pub fn encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    utf8_percent_encode(value, ENCODED).to_string()
 }
 
 #[cfg(test)]

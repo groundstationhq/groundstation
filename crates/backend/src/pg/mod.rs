@@ -13,6 +13,7 @@ use std::time::Duration;
 use deadpool_postgres::{Manager, ManagerConfig, RecyclingMethod, Runtime};
 pub use deadpool_postgres::{Object as Connection, Pool};
 pub use migrate::{INGEST_ROLE, WORKER_ROLE, migrate};
+use percent_encoding::percent_decode_str;
 use tokio_postgres::NoTls;
 use tokio_postgres::config::SslMode;
 
@@ -73,7 +74,7 @@ fn take_root_cert(url: &str) -> (String, Option<String>) {
     let (mut root, mut kept) = (None, Vec::new());
     for pair in query.split('&') {
         match pair.strip_prefix("sslrootcert=") {
-            Some(path) => root = Some(percent_decoded(path)),
+            Some(path) => root = Some(percent_decode_str(path).decode_utf8_lossy().into_owned()),
             None => kept.push(pair),
         }
     }
@@ -82,29 +83,6 @@ fn take_root_cert(url: &str) -> (String, Option<String>) {
         false => format!("{base}?{}", kept.join("&")),
     };
     (url, root)
-}
-
-fn percent_decoded(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .and_then(|h| std::str::from_utf8(h).ok())
-            .and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(byte)) => {
-                out.push(byte);
-                i += 3;
-            }
-            (byte, _) => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// TLS that verifies the server's certificate and host name: against the CA

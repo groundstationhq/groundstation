@@ -75,7 +75,7 @@ fn refuse(raw: &RawValue, error: &'static str) -> Invalid {
 
 #[cfg(test)]
 mod tests {
-    use groundstation_schema::{Agent, EventKind, SCHEMA};
+    use groundstation_schema::{Agent, EventKind, SCHEMA, attr};
     use serde_json::json;
 
     use super::*;
@@ -147,7 +147,7 @@ mod tests {
             .is_ok()
         );
         let mut big = event("t", Utc::now());
-        big["attributes"] = json!({ "gs.tool.output.body": "x".repeat(MAX_ATTRIBUTES) });
+        big["attributes"] = json!({ attr::TOOL_OUTPUT: "x".repeat(MAX_ATTRIBUTES) });
         assert_eq!(error(check(big)), "attributes are larger than 1 MiB");
     }
 

@@ -2,6 +2,8 @@
 //! Each rounds to what it shows before picking the unit, so a value just
 //! under a boundary reads as the next unit up, never as "60.0s" or "59m 60s".
 
+pub use groundstation_wire::format::{count, plural};
+
 pub fn duration(ms: i64) -> String {
     let ms = ms.max(0);
     let tenths = (ms + 50) / 100;
@@ -56,23 +58,6 @@ pub fn percent(fraction: f64) -> String {
     }
 }
 
-pub fn count(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// A count and what it counts: "1 read", "1,204 reads".
-pub fn plural(n: u64, one: &str, many: &str) -> String {
-    format!("{} {}", count(n), if n == 1 { one } else { many })
-}
-
 /// "day" or "7 days", to follow "in the last".
 pub fn days(n: i64) -> String {
     if n == 1 {
@@ -123,7 +108,6 @@ mod tests {
             (percent(0.61), percent(0.021)),
             ("61%".into(), "2.1%".into())
         );
-        assert_eq!(count(126_467), "126,467");
         assert_eq!(short("3f2a9c1e-77"), "3f2a9c1");
         assert_eq!(short("checkout-fix-1"), "checkout-fix-1");
         assert_eq!(short("deadbeef"), "deadbeef");
@@ -147,13 +131,6 @@ mod tests {
         assert_eq!(p, ["10%", "9.9%", "<0.1%", "0%"]);
         let u: Vec<_> = [0.0996, 99.996, 0.0004].map(usd).into();
         assert_eq!(u, ["$0.10", "$100", "$0.000"]);
-    }
-
-    #[test]
-    fn counts_say_one_or_many() {
-        assert_eq!(plural(1, "wait", "waits"), "1 wait");
-        assert_eq!(plural(1_204, "read", "reads"), "1,204 reads");
-        assert_eq!(plural(0, "call", "calls"), "0 calls");
     }
 
     #[test]

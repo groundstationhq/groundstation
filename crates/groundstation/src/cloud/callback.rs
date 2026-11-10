@@ -144,11 +144,9 @@ async fn read_target(stream: &mut TcpStream) -> Result<String> {
 fn parse(target: &str, state: &str) -> Option<Outcome> {
     let query = target.strip_prefix("/callback?")?;
     let param = |name: &str| {
-        query
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| decode(v))
+        form_urlencoded::parse(query.as_bytes())
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.into_owned())
     };
     if param("state")? != state {
         return None;
@@ -157,33 +155,6 @@ fn parse(target: &str, state: &str) -> Option<Outcome> {
         return Some(Outcome::Code(code));
     }
     param("error").map(|_| Outcome::Denied)
-}
-
-fn decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .and_then(|h| std::str::from_utf8(h).ok())
-            .and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(b)) => {
-                out.push(b);
-                i += 3;
-            }
-            (b'+', _) => {
-                out.push(b' ');
-                i += 1;
-            }
-            (b, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

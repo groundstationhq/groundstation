@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 pub use groundstation_schema::HookEnvelope;
 
+pub mod format;
 pub mod insights;
 pub mod summary;
 

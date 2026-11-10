@@ -341,20 +341,6 @@ pub fn duration(ms: i64) -> String {
     }
 }
 
-/// A count with thousands separators and what it counts: "1 event",
-/// "1,204 events".
-pub fn count_noun(n: u64, one: &str, many: &str) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    format!("{out} {}", if n == 1 { one } else { many })
-}
-
 pub fn tokens(n: u64) -> String {
     match n {
         n if n < 1000 => n.to_string(),

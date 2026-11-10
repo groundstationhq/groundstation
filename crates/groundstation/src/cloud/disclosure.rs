@@ -76,7 +76,7 @@ pub fn describe(config: &Config, endpoint: &str, pending: Option<u64>) -> Result
         Some(0) => "  - From now on: gsd holds nothing it hasn't uploaded.".into(),
         Some(n) => format!(
             "  - Also the {} gsd recorded before now and hasn't uploaded, under these settings.",
-            crate::render::count_noun(n, "event", "events")
+            groundstation_wire::format::plural(n, "event", "events")
         ),
         None => "  - Also what gsd recorded before now and hasn't uploaded, under these settings."
             .into(),

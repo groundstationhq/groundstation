@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{TimeZone, Utc};
-use groundstation_schema::{Agent, Event, EventKind, SCHEMA, ToolCategory};
+use groundstation_schema::{Agent, Event, EventKind, SCHEMA, ToolCategory, attr};
 use groundstation_wire::insights::{Evidence, Insight, InsightState, Severity, StateChange};
 use groundstation_wire::summary::{STATUS_BY_KIND, STATUS_RUNNING};
 use groundstation_wire::{
@@ -163,7 +163,7 @@ fn event(full: bool) -> Event {
     if full {
         e.span_id = Some("s".into());
         e.parent_span_id = Some("p".into());
-        e.set("gs.prompt.text", "hi");
+        e.set(attr::PROMPT_TEXT, "hi");
     }
     e
 }

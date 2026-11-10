@@ -22,6 +22,7 @@ groundstation-ui-embed = { version = "0.1.2", path = "../ui-embed" }
 groundstation-wire = { version = "0.1.2", path = "../wire" }
 hex = "0.4.3"
 openidconnect = { version = "4.0.1", default-features = false }
+percent-encoding = "2.3.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

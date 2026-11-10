@@ -10,13 +10,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use groundstation_wire::ErrorBody;
 use gsd::config::Config;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 
 use callback::Outcome;
+
+use crate::client::{encode, reason};
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Where the CLI collects the token the person approved.
@@ -236,14 +237,6 @@ async fn collect(endpoint: &str, code: &str, verifier: &str) -> Result<Collected
         .with_context(|| format!("{endpoint} answered, but not with a token"))
 }
 
-async fn reason(response: reqwest::Response) -> String {
-    let status = response.status();
-    match response.json::<ErrorBody>().await {
-        Ok(body) => body.error,
-        Err(_) => status.to_string(),
-    }
-}
-
 /// Asks the backend whether it takes `token`, with an empty batch, so a
 /// mistyped or revoked token is caught here and not in failing uploads.
 async fn check_token(endpoint: &str, token: &str) -> Result<()> {
@@ -396,19 +389,6 @@ fn confirm(question: &str) -> Result<bool> {
         .read_line(&mut answer)
         .context("reading the answer")?;
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
-}
-
-/// Percent-encodes a query value.
-fn encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 #[cfg(test)]

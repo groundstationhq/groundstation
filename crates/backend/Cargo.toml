@@ -20,6 +20,7 @@ getrandom = "0.4.3"
 groundstation-schema = { version = "0.1.2", path = "../schema" }
 groundstation-wire = { version = "0.1.2", path = "../wire" }
 hex = "0.4.3"
+percent-encoding = "2.3.2"
 rustls = "0.23.45"
 rustls-platform-verifier = "0.7.1"
 serde = { version = "1.0.229", features = ["derive"] }
