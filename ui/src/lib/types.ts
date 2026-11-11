@@ -1,6 +1,6 @@
 /**
  * Wire types. Mirror `crates/schema` (groundstation.telemetry.v0) and
- * `crates/api` exactly. Change them in the same PR as the Rust side.
+ * `crates/wire` exactly. Change them in the same PR as the Rust side.
  */
 
 export const SCHEMA = "groundstation.telemetry.v0";
@@ -15,6 +15,7 @@ export type EventKind =
   | "agent.notification"
   | "turn.user"
   | "turn.completed"
+  | "turn.interrupted"
   | "model.started"
   | "model.completed"
   | "tool.started"
@@ -40,7 +41,8 @@ export interface Event {
   agent: Agent;
   span_id?: string;
   parent_span_id?: string;
-  attributes: Record<string, unknown>;
+  /** Absent when the event has none. */
+  attributes?: Record<string, unknown>;
 }
 
 /** Attribute keys, same strings as `groundstation_schema::attr`. */
@@ -93,7 +95,7 @@ export const attr = {
   NOTIFICATION_MESSAGE: "gs.notification.message",
 } as const;
 
-/** `GET /v1/health`. Mirrors `Health` in crates/api. Fields that describe one machine's daemon are absent on the hosted backend. */
+/** `GET /v1/health`. Mirrors `Health` in crates/wire. Fields that describe one machine's daemon, and the counts, are absent on the hosted backend. */
 export interface Health {
   status: string;
   /** Which host is answering; absent from gsd builds older than this field. */
@@ -106,8 +108,8 @@ export interface Health {
   adapters: string[];
   version: string;
   schema: string;
-  trajectories: number;
-  events: number;
+  trajectories?: number;
+  events?: number;
   pid?: number;
   data_dir?: string;
   spool_pending?: number;
@@ -118,13 +120,13 @@ export interface UploadStatus {
   mode: string;
   endpoint: string | null;
   pending: number;
-  /** Events given up on after repeated rejection by the backend. */
-  dropped: number;
+  /** Events given up on after repeated rejection by the backend; absent from gsd builds older than this field. */
+  dropped?: number;
   /** The most recent failed upload, cleared by the next success. */
   last_error?: { message: string; at: string };
 }
 
-/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/api. */
+/** `GET /v1/stats/tools?days=N`. Mirrors `ToolStats` in crates/wire. */
 export interface ToolStats {
   days: number;
   since: string;
@@ -139,7 +141,8 @@ export interface ToolLatency {
   max_ms: number;
 }
 
-export type TrajectoryStatus = "running" | "idle" | "completed" | "failed" | "cancelled" | (string & {});
+/** The statuses `STATUS_BY_KIND` in crates/wire assigns. */
+export type TrajectoryStatus = "running" | "idle" | "waiting" | "paused" | "completed" | "failed" | "cancelled" | (string & {});
 
 export interface TrajectorySummary {
   id: string;
@@ -150,8 +153,8 @@ export interface TrajectorySummary {
   cwd: string | null;
   repository: string | null;
   branch: string | null;
-  /** Git commit checked out when the trajectory started. */
-  revision: string | null;
+  /** Git commit checked out at the trajectory's latest event; absent from gsd builds older than this field. */
+  revision?: string | null;
   host: string | null;
   started_at: string;
   updated_at: string;
@@ -179,11 +182,11 @@ export function totalTokens(t: TrajectorySummary): number {
 }
 
 export function str(e: Event, key: string): string | undefined {
-  const v = e.attributes[key];
+  const v = e.attributes?.[key];
   return typeof v === "string" ? v : undefined;
 }
 export function num(e: Event, key: string): number | undefined {
-  const v = e.attributes[key];
+  const v = e.attributes?.[key];
   return typeof v === "number" ? v : undefined;
 }
 
@@ -196,4 +199,57 @@ export function cacheHit(inTok: number, cacheWrite: number, cacheRead: number): 
 /** Everything the model read: uncached input + cache write + cache read. */
 export function promptTokens(inTok: number, cacheWrite: number, cacheRead: number): number {
   return inTok + cacheWrite + cacheRead;
+}
+
+/** An ingest token (`GET /v1/tokens`, hosted only). Mirrors `IngestToken` in crates/wire. */
+export interface IngestToken {
+  id: string;
+  label: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+/** The body of `POST /v1/tokens`. Mirrors `NewToken`. */
+export interface NewToken {
+  label: string;
+}
+
+/** The answer to `POST /v1/tokens`: the only time the token itself is shown. Mirrors `CreatedToken`. */
+export interface CreatedToken extends IngestToken {
+  secret: string;
+}
+
+export type Severity = "low" | "medium" | "high";
+export type InsightState = "open" | "dismissed" | "resolved";
+
+/** A finding (`GET /v1/insights`, hosted only). Mirrors `Insight` in crates/wire. */
+export interface Insight {
+  id: string;
+  detector: string;
+  severity: Severity;
+  title: string;
+  body: string;
+  recommendation: string;
+  evidence: Evidence[];
+  metrics: Record<string, number>;
+  first_seen_at: string;
+  last_seen_at: string;
+  state: InsightState;
+}
+
+export interface Evidence {
+  trajectory_id: string;
+  event_ids: string[];
+  note: string;
+}
+
+/** The body of `POST /v1/insights/{id}/state`. Mirrors `StateChange`. */
+export interface StateChange {
+  state: InsightState;
+}
+
+/** What a failed `/v1` call answers, when the host wrote the body. Mirrors `ErrorBody`. */
+export interface ErrorBody {
+  error: string;
 }

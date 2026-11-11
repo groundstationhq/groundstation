@@ -34,7 +34,7 @@ function toolDetail(e: Event): string {
   if (pat) return `"${pat}"`;
   const url = str(e, attr.HTTP_URL);
   if (url) return url;
-  const input = e.attributes[attr.TOOL_INPUT];
+  const input = e.attributes?.[attr.TOOL_INPUT];
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
     for (const k of ["command", "file_path", "path", "pattern", "query", "url", "description", "prompt"]) {
@@ -55,10 +55,16 @@ export function buildRows(d: TrajectoryDetail): Row[] {
   const rows: Row[] = [];
   const now = Date.now();
   const isRunning = d.status === "running";
+  // How long a span still open has run. The machine that recorded it may
+  // run ahead of this browser's clock; then it's unknown, never negative.
+  const since = (iso: string) => {
+    const d = now - ms(iso);
+    return d >= 0 ? d : null;
+  };
 
   for (const e of events) {
     const t0 = ms(e.timestamp) - start;
-    const depth = e.attributes[attr.SIDECHAIN] ? 1 : 0;
+    const depth = e.attributes?.[attr.SIDECHAIN] ? 1 : 0;
     const base = { id: e.id, eventKind: e.kind, t0, open: e, depth, running: false, failed: false, durationMs: null as number | null, dims: [] as string[] };
 
     switch (e.kind) {
@@ -69,7 +75,7 @@ export function buildRows(d: TrajectoryDetail): Row[] {
       }
       case "tool.started": {
         const close = e.span_id ? closers.get(e.span_id) : undefined;
-        const dur = close ? ms(close.timestamp) - ms(e.timestamp) : isRunning ? now - ms(e.timestamp) : null;
+        const dur = close ? ms(close.timestamp) - ms(e.timestamp) : isRunning ? since(e.timestamp) : null;
         const src = close ?? e;
         const exit = num(src, attr.SHELL_EXIT_CODE);
         const failed = close?.kind === "tool.failed" || (exit != null && exit !== 0);
@@ -92,7 +98,7 @@ export function buildRows(d: TrajectoryDetail): Row[] {
       case "model.started": {
         const close = e.span_id ? closers.get(e.span_id) : undefined;
         if (close) break; // rendered from model.completed
-        rows.push({ ...base, kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", running: isRunning, durationMs: isRunning ? now - ms(e.timestamp) : null });
+        rows.push({ ...base, kind: "model", name: str(e, attr.GEN_AI_RESPONSE_MODEL) ?? "model", detail: "", running: isRunning, durationMs: isRunning ? since(e.timestamp) : null });
         break;
       }
       case "model.completed": {
@@ -109,7 +115,7 @@ export function buildRows(d: TrajectoryDetail): Row[] {
       }
       case "subagent.started": {
         const close = e.span_id ? closers.get(e.span_id) : undefined;
-        const dur = close ? ms(close.timestamp) - ms(e.timestamp) : isRunning ? now - ms(e.timestamp) : null;
+        const dur = close ? ms(close.timestamp) - ms(e.timestamp) : isRunning ? since(e.timestamp) : null;
         rows.push({ ...base, kind: "agent", name: "subagent", detail: str(e, attr.SUBAGENT_TYPE) ?? "", durationMs: dur, running: !close && isRunning, close });
         break;
       }
@@ -143,34 +149,60 @@ export function buildRows(d: TrajectoryDetail): Row[] {
   return rows;
 }
 
-export function fmtK(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 100_000) return `${Math.round(n / 1000)}k`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
+/** 512 B / 4.2 KB / 1.3 MB, rounded before the unit is chosen. */
 export function fmtBytes(n: number): string {
-  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
+  if (Math.round(n) < 1024) return `${Math.round(n)} B`;
+  const tenthsK = Math.round((n / 1024) * 10);
+  if (tenthsK < 10240) return `${(tenthsK / 10).toFixed(1)} KB`;
+  return `${(n / 1_048_576).toFixed(1)} MB`;
 }
 
-/** Aggregate for the "where did the time go" strip. */
+/** How long a set of intervals covers, overlaps counted once. */
+function covered(spans: Array<[number, number]>, minus: Array<[number, number]> = []): number {
+  const merge = (xs: Array<[number, number]>) => {
+    const out: Array<[number, number]> = [];
+    for (const [a, b] of [...xs].sort((x, y) => x[0] - y[0])) {
+      const last = out[out.length - 1];
+      if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+      else out.push([a, b]);
+    }
+    return out;
+  };
+  const cut = merge(minus);
+  let total = 0;
+  for (const [a, b] of merge(spans)) {
+    let len = b - a;
+    for (const [c, d] of cut) len -= Math.max(0, Math.min(b, d) - Math.max(a, c));
+    total += Math.max(0, len);
+  }
+  return total;
+}
+
+/**
+ * Aggregate for the "where did the time go" strip: how much of the
+ * trajectory's time each kind of span covered. Spans that ran at once
+ * count once, and time inside a subagent counts as the subagent's, not
+ * again as the tool call that started it or the tools it ran.
+ */
 export function breakdown(rows: Row[]) {
-  let tool = 0, model = 0, sub = 0;
+  const spans = { tool: [] as Array<[number, number]>, model: [] as Array<[number, number]>, sub: [] as Array<[number, number]> };
   const byTool = new Map<string, { n: number; ms: number; failed: number }>();
   for (const r of rows) {
     const d = r.durationMs ?? 0;
     if (r.depth > 0) continue; // sidechain time is counted under its subagent
+    const span: [number, number] = [r.t0, r.t0 + d];
     if (r.kind === "tool") {
-      tool += d;
+      spans.tool.push(span);
       const key = r.name === "Bash" || r.name === "shell" ? `${r.name} · ${r.detail.split(" ").slice(0, 2).join(" ")}` : r.name;
       const b = byTool.get(key) ?? { n: 0, ms: 0, failed: 0 };
       b.n++; b.ms += d; if (r.failed) b.failed++;
       byTool.set(key, b);
-    } else if (r.kind === "model") model += d;
-    else if (r.kind === "agent") sub += d;
+    } else if (r.kind === "model") spans.model.push(span);
+    else if (r.kind === "agent") spans.sub.push(span);
   }
   const top = [...byTool.entries()].map(([k, v]) => ({ key: k, ...v })).sort((a, b) => b.ms - a.ms);
+  const sub = covered(spans.sub);
+  const tool = covered(spans.tool, spans.sub);
+  const model = covered(spans.model, [...spans.sub, ...spans.tool]);
   return { tool, model, sub, top };
 }

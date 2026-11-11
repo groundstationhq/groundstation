@@ -1,5 +1,7 @@
 //! `[redaction]` is applied inside the daemon, before anything touches disk,
-//! so nothing that leaves an agent is stored or uploaded unfiltered.
+//! so nothing that leaves an agent is stored or uploaded unfiltered. The
+//! uploader applies it again as each event leaves, so events stored before
+//! the settings changed leave as the settings now say.
 
 use std::path::Path;
 
@@ -45,12 +47,16 @@ const SECRET_PATTERNS: &[(&str, &str)] = &[
     ),
     (r"(?i)\b(basic)\s+[A-Za-z0-9+/]{16,}=*", "$1 [REDACTED]"),
     (r"(?i)(://[^/\s:@]+:)[^@\s/]+@", "${1}[REDACTED]@"),
+    // What a Ground Station backend issues: ingest tokens, session ids and the
+    // CLI's one-time approval codes (crates/backend/src/secret.rs).
+    (r"\bgs[cis]_[A-Za-z0-9_\-]{43}", REDACTED),
     (
         r#"(?i)\b([A-Z0-9_]*(?:password|passwd|secret|api_?key|access_?key|auth_?token|private_?key)[A-Z0-9_]*)(["']?\s*[:=]\s*["']?)[^\s"'`,;]{4,}"#,
         "$1$2[REDACTED]",
     ),
 ];
 
+#[derive(Clone)]
 pub struct Privacy {
     exclude: Vec<&'static str>,
     paths: PathPolicy,
@@ -75,6 +81,14 @@ impl Privacy {
     ) -> Result<Self> {
         let r = &config.redaction;
         let mut rules = Vec::new();
+        // gsd's own upload token, whatever else is on: an agent that reads
+        // config.toml must not send this machine's credential upstream.
+        if let Some(token) = config.transport.token.as_deref() {
+            let token = token.trim();
+            if token.len() >= MIN_ENV_VALUE_LEN {
+                rules.push((Regex::new(&regex::escape(token))?, REDACTED.to_string()));
+            }
+        }
         if r.secrets {
             for (pattern, replacement) in SECRET_PATTERNS {
                 let re = Regex::new(pattern).expect("built-in pattern");
@@ -103,7 +117,7 @@ impl Privacy {
                 .with_context(|| format!("invalid redaction.patterns entry {pattern:?}"))?;
             rules.push((re, REDACTED.to_string()));
         }
-        let exclude = resolve_exclude(&r.exclude)?;
+        let exclude = excluded_fields(&r.exclude)?;
         Ok(Self {
             store_raw: config.capture.raw && exclude.is_empty() && r.paths == PathPolicy::Keep,
             exclude,
@@ -121,7 +135,8 @@ impl Privacy {
     }
 
     /// Drops excluded fields, applies the path policy, then redacts secrets
-    /// in every remaining string.
+    /// in every remaining string. Applying it again changes nothing, so it
+    /// also runs as events leave (see [`crate::outbound`]).
     pub fn apply(&self, event: &mut Event) {
         for key in &self.exclude {
             event.attributes.remove(*key);
@@ -135,6 +150,13 @@ impl Privacy {
             if let Some(Value::Object(input)) = event.attributes.get_mut(attr::TOOL_INPUT) {
                 for key in attr::TOOL_INPUT_PATH_KEYS {
                     if let Some(Value::String(s)) = input.get_mut(*key) {
+                        *s = self.hash(s);
+                    }
+                }
+            }
+            if let Some(output) = event.attributes.get_mut(attr::TOOL_OUTPUT) {
+                for pointer in attr::TOOL_OUTPUT_PATHS {
+                    if let Some(Value::String(s)) = output.pointer_mut(pointer) {
                         *s = self.hash(s);
                     }
                 }
@@ -153,9 +175,17 @@ impl Privacy {
         }
     }
 
+    pub fn paths(&self) -> PathPolicy {
+        self.paths
+    }
+
     /// A stable stand-in for a path: HMAC-SHA256 under the install's key,
     /// truncated. The same path always gives the same value on this machine.
+    /// A value that already is one stays as it is.
     fn hash(&self, s: &str) -> String {
+        if is_hash(s) {
+            return s.to_string();
+        }
         let mut inner_pad = [0x36u8; 64];
         let mut outer_pad = [0x5cu8; 64];
         for (i, k) in self.path_key.iter().enumerate() {
@@ -206,6 +236,12 @@ impl Privacy {
     }
 }
 
+/// Whether `s` is what [`Privacy::hash`] makes: `sha256:` and 16 hex digits.
+fn is_hash(s: &str) -> bool {
+    s.strip_prefix("sha256:")
+        .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Translates `*`-globs over environment variable names into regex alternatives.
 fn env_name_alternatives(globs: &[String]) -> Result<String> {
     let mut alternatives = Vec::new();
@@ -228,7 +264,7 @@ fn env_name_alternatives(globs: &[String]) -> Result<String> {
 /// field with or without its `gs.` prefix, or a dotted prefix of several
 /// (`tool` covers `tool.input.body` and `tool.output.body`). Unknown entries
 /// are an error: a typo must not silently keep content that was meant to go.
-fn resolve_exclude(entries: &[String]) -> Result<Vec<&'static str>> {
+pub fn excluded_fields(entries: &[String]) -> Result<Vec<&'static str>> {
     let mut keys = Vec::new();
     for entry in entries {
         let name = entry.trim();
@@ -285,17 +321,38 @@ pub fn path_key(data_dir: &Path) -> Result<[u8; 32]> {
     }
 }
 
-fn truncate(s: &mut String, max: usize) {
+/// Cuts `s` to `max` bytes, on a character boundary, and says how many went.
+/// A string cut before keeps its count and is cut again only if what's left
+/// of it is still too long, the count growing by what goes now: the policy
+/// runs again as events leave, and that must change nothing.
+pub(crate) fn truncate(s: &mut String, max: usize) {
     if max == 0 || s.len() <= max {
         return;
     }
-    let dropped = s.len() - max;
+    let (kept, before) = cut_before(s).unwrap_or((s.len(), 0));
+    if kept <= max {
+        return;
+    }
     let mut cut = max;
     while !s.is_char_boundary(cut) {
         cut -= 1;
     }
+    let dropped = before.saturating_add(kept - cut);
     s.truncate(cut);
-    s.push_str(&format!("…[truncated {dropped} bytes]"));
+    s.push_str(&format!("{TRUNCATED}{dropped} bytes]"));
+}
+
+const TRUNCATED: &str = "…[truncated ";
+
+/// Where the marker [`truncate`] leaves starts in `s`, and the count in it.
+fn cut_before(s: &str) -> Option<(usize, usize)> {
+    let rest = s.strip_suffix(" bytes]")?;
+    let at = rest.rfind(TRUNCATED)?;
+    let count = &rest[at + TRUNCATED.len()..];
+    if count.is_empty() || !count.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((at, count.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -432,17 +489,17 @@ mod tests {
 
     #[test]
     fn exclude_prefixes_and_typos() {
-        let keys = resolve_exclude(&["tool".into(), "gs.shell.command".into()]).unwrap();
+        let keys = excluded_fields(&["tool".into(), "gs.shell.command".into()]).unwrap();
         assert_eq!(
             keys,
             [attr::SHELL_COMMAND, attr::TOOL_INPUT, attr::TOOL_OUTPUT]
         );
-        let err = resolve_exclude(&["tool.outptu".into()])
+        let err = excluded_fields(&["tool.outptu".into()])
             .unwrap_err()
             .to_string();
         assert!(err.contains("tool.output.body"), "{err}");
         // "prompt.t" is not a whole segment of "prompt.text".
-        assert!(resolve_exclude(&["prompt.t".into()]).is_err());
+        assert!(excluded_fields(&["prompt.t".into()]).is_err());
     }
 
     #[test]
@@ -472,6 +529,31 @@ mod tests {
         );
         assert_eq!(p.path("/home/u/secret-project/src/a.rs"), file);
         assert!(p.raw(&json!({})).is_none());
+    }
+
+    #[test]
+    fn hashes_the_paths_every_agent_puts_in_tool_bodies() {
+        let p = privacy(|c| c.redaction.paths = PathPolicy::Hash);
+        let mut ev = event();
+        let path = "/home/u/secret-project/src/a.rs";
+        // OpenCode names it filePath; Claude Code's results repeat it.
+        ev.set(attr::TOOL_INPUT, json!({ "filePath": path }));
+        ev.set(
+            attr::TOOL_OUTPUT,
+            json!({ "filePath": path, "file": { "filePath": path, "numLines": 3 } }),
+        );
+        p.apply(&mut ev);
+        let hashed = p.path(path);
+        assert_eq!(ev.get(attr::TOOL_INPUT).unwrap()["filePath"], json!(hashed));
+        let output = ev.get(attr::TOOL_OUTPUT).unwrap();
+        assert_eq!(output["filePath"], json!(hashed));
+        assert_eq!(output["file"]["filePath"], json!(hashed));
+        assert_eq!(output["file"]["numLines"], json!(3));
+        assert!(
+            !serde_json::to_string(&ev)
+                .unwrap()
+                .contains("secret-project")
+        );
     }
 
     #[test]
@@ -515,5 +597,52 @@ mod tests {
         p.apply(&mut ev);
         let out = ev.get(attr::TOOL_OUTPUT).unwrap().as_str().unwrap();
         assert!(out.starts_with("héll…[truncated"), "{out}");
+    }
+
+    #[test]
+    fn applying_again_keeps_what_was_cut_and_how_much() {
+        let p = privacy(|c| c.capture.max_content_bytes = 10);
+        let mut ev = event();
+        ev.set(attr::TOOL_OUTPUT, "a".repeat(100));
+        p.apply(&mut ev);
+        let once = json!(format!("{}…[truncated 90 bytes]", "a".repeat(10)));
+        assert_eq!(ev.get(attr::TOOL_OUTPUT), Some(&once));
+        p.apply(&mut ev);
+        assert_eq!(ev.get(attr::TOOL_OUTPUT), Some(&once));
+        // A lower limit since: cut further, counting everything cut.
+        privacy(|c| c.capture.max_content_bytes = 4).apply(&mut ev);
+        let twice = json!(format!("{}…[truncated 96 bytes]", "a".repeat(4)));
+        assert_eq!(ev.get(attr::TOOL_OUTPUT), Some(&twice));
+        // Text ending like the marker reads as cut already: its count grows.
+        let mut ev = event();
+        ev.set(
+            attr::TOOL_OUTPUT,
+            format!("{}…[truncated 5 bytes]", "b".repeat(20)),
+        );
+        p.apply(&mut ev);
+        let out = ev.get(attr::TOOL_OUTPUT).and_then(Value::as_str).unwrap();
+        assert_eq!(out, format!("{}…[truncated 15 bytes]", "b".repeat(10)));
+    }
+
+    #[test]
+    fn ground_station_secrets_and_gsds_own_token_are_redacted() {
+        let p = privacy(|_| {});
+        for issued in ["gsi_", "gss_", "gsc_"] {
+            let secret = format!("{issued}{}", "aZ0_-".repeat(9).get(..43).unwrap());
+            assert_eq!(
+                p.redact(&format!("token = \"{secret}\"")),
+                "token = \"[REDACTED]\"",
+                "{issued}"
+            );
+        }
+        // Its own upload token, in any format, even with secret formats off.
+        let own = privacy(|c| {
+            c.redaction.secrets = false;
+            c.transport.token = Some("not-a-known-format-1234".into());
+        });
+        assert_eq!(
+            own.redact("cat config.toml: not-a-known-format-1234"),
+            "cat config.toml: [REDACTED]"
+        );
     }
 }

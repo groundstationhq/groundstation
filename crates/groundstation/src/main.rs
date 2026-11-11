@@ -1,6 +1,7 @@
 //! `groundstation`: the Ground Station CLI.
 
 mod client;
+mod cloud;
 mod render;
 mod update;
 
@@ -16,8 +17,8 @@ use groundstation_adapter_claude_code as claude_code;
 use groundstation_adapter_codex as codex;
 use groundstation_adapter_opencode as opencode;
 use groundstation_adapter_pi as pi;
-use groundstation_api::{HookEnvelope, SpoolItem};
 use groundstation_hooks_json::HookSet;
+use groundstation_wire::{HookEnvelope, SpoolItem};
 use gsd::config::Config;
 use uuid::Uuid;
 
@@ -89,6 +90,11 @@ enum Command {
     Resync { agent: AgentName },
     /// Print config and data locations and the effective configuration.
     Config,
+    /// Upload events to a Ground Station backend, or stop.
+    Cloud {
+        #[command(subcommand)]
+        action: CloudAction,
+    },
     /// Install the latest release over this install and restart gsd.
     Update {
         /// Only report whether a newer release exists.
@@ -112,6 +118,32 @@ enum DaemonAction {
     Run,
     /// Same as `groundstation status`.
     Status,
+}
+
+#[derive(Subcommand)]
+enum CloudAction {
+    /// Approve this computer in the browser and start uploading.
+    Login {
+        /// The backend's URL, e.g. https://gs.example.com.
+        #[arg(long)]
+        endpoint: String,
+        /// What the backend's Tokens page calls this computer.
+        #[arg(long)]
+        label: Option<String>,
+        /// Don't ask before connecting.
+        #[arg(long)]
+        yes: bool,
+        /// Print the approval URL instead of opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Read an ingest token from standard input instead of approving in
+        /// a browser, for a computer you reach over SSH. Create the token on
+        /// the backend's Tokens page.
+        #[arg(long, conflicts_with_all = ["label", "no_open"])]
+        token_stdin: bool,
+    },
+    /// Stop uploading; keep everything on this computer.
+    Logout,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -339,6 +371,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }),
         Command::Resync { agent } => block_on(resync(&config, agent)),
         Command::Update { check, to } => block_on(update_cmd(&config, check, to)),
+        Command::Cloud { action } => block_on(cloud_cmd(&config, config_path, action)),
         Command::Config => {
             let mut shown = config.clone();
             // Fail here, not at daemon start, on a bad exclude or env glob.
@@ -352,6 +385,66 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+async fn cloud_cmd(
+    config: &Config,
+    config_path: Option<&Path>,
+    action: CloudAction,
+) -> Result<ExitCode> {
+    let file = config_path.map_or_else(gsd::config::config_file, Path::to_path_buf);
+    let changed = match action {
+        CloudAction::Login {
+            endpoint,
+            label,
+            yes,
+            no_open,
+            token_stdin,
+        } => {
+            let health = Client::new(config)?.health().await.ok();
+            let login = cloud::Login {
+                endpoint: &endpoint,
+                label,
+                yes,
+                no_open,
+                token_stdin,
+                pending: health.and_then(|h| h.upload).map(|u| u.pending),
+            };
+            cloud::login(config, &file, login).await?
+        }
+        CloudAction::Logout => cloud::logout(&file)?,
+    };
+    if changed {
+        // gsd reads its config at start.
+        let config = Config::load(config_path)?;
+        restart_for(&config, config_path).await?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Restarts the gsd `config` describes, so it reads it again; a gsd running
+/// with another config (another data directory) on the same address is left
+/// alone, since stopping it would switch that one's data and settings.
+async fn restart_for(config: &Config, config_path: Option<&Path>) -> Result<()> {
+    if let Ok(health) = Client::new(config)?.health().await {
+        let running = health.data_dir.as_deref().map(PathBuf::from);
+        let same = |a: &Path, b: &Path| {
+            a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
+        };
+        if let Some(running) = running.filter(|r| !same(r, &config.data_dir())) {
+            println!(
+                "The gsd on {} keeps its data in {}, not {}: it runs with another config, so it's \
+                 left as it is. Restart gsd with this config for the change to take effect.",
+                config.daemon.listen,
+                render::tilde(&running.to_string_lossy()),
+                render::tilde(&config.data_dir().to_string_lossy()),
+            );
+            return Ok(());
+        }
+        stop_daemon(config).await?;
+    }
+    start_daemon(config, config_path).await?;
+    Ok(())
 }
 
 fn block_on(f: impl Future<Output = Result<ExitCode>>) -> Result<ExitCode> {
@@ -496,13 +589,13 @@ fn opencode_version() -> Result<Option<String>> {
 /// Adapters this CLI can connect that the running gsd doesn't know: it
 /// predates them and must be restarted to accept their hooks.
 /// The daemon's pid for messages; gsd always reports it.
-fn pid(health: &groundstation_api::Health) -> String {
+fn pid(health: &groundstation_wire::Health) -> String {
     health
         .pid
         .map_or_else(|| "unknown".into(), |p| p.to_string())
 }
 
-fn missing_adapters(health: &groundstation_api::Health) -> Vec<&'static str> {
+fn missing_adapters(health: &groundstation_wire::Health) -> Vec<&'static str> {
     AgentName::value_variants()
         .iter()
         .map(|a| a.adapter())
@@ -594,19 +687,39 @@ async fn start_daemon(config: &Config, config_path: Option<&Path>) -> Result<Exi
 
 async fn stop_daemon(config: &Config) -> Result<ExitCode> {
     let client = Client::new(config)?;
-    if client.health().await.is_err() {
+    let Ok(health) = client.health().await else {
         println!("gsd is not running");
         return Ok(ExitCode::SUCCESS);
-    }
+    };
     client.shutdown().await?;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if client.health().await.is_err() {
+            wait_for_exit(config, health.pid).await;
             println!("gsd stopped");
             return Ok(ExitCode::SUCCESS);
         }
     }
     bail!("gsd did not stop within 5s")
+}
+
+/// gsd stops answering before it exits: its uploader makes one last attempt
+/// first, which can take up to its request timeout. A gsd started before
+/// then would share the store with it. It's gone once its pid file is.
+async fn wait_for_exit(config: &Config, pid: Option<u32>) {
+    let Some(pid) = pid.map(|p| p.to_string()) else {
+        return;
+    };
+    let still_there = || std::fs::read_to_string(config.pid_file()).is_ok_and(|p| p.trim() == pid);
+    for i in 0..350 {
+        if !still_there() {
+            return;
+        }
+        if i == 10 {
+            println!("gsd is finishing its last upload…");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn resync(config: &Config, agent: AgentName) -> Result<ExitCode> {
@@ -802,10 +915,9 @@ async fn status(config: &Config) -> Result<ExitCode> {
     if let Some(dir) = &health.data_dir {
         println!("  data      {}", render::tilde(dir));
     }
-    println!(
-        "  stored    {} trajectories, {} events",
-        health.trajectories, health.events
-    );
+    if let (Some(trajectories), Some(events)) = (health.trajectories, health.events) {
+        println!("  stored    {trajectories} trajectories, {events} events");
+    }
     if let Some(n) = health.spool_pending {
         println!("  spool     {n} pending");
     }

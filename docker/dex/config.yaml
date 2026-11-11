@@ -1,0 +1,30 @@
+# A local OpenID Connect provider for development and tests: one user,
+# dev@groundstation.test with the password "password". Not for production.
+issuer: http://127.0.0.1:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: groundstation
+    name: Ground Station
+    secret: groundstation-dev-secret
+    redirectURIs:
+      - http://127.0.0.1:4321/auth/callback
+      - http://127.0.0.1:8080/auth/callback
+      # The Vite dev server (ui/vite.config.ts), with the api's public URL set to it.
+      - http://localhost:5180/auth/callback
+
+enablePasswordDB: true
+staticPasswords:
+  - email: dev@groundstation.test
+    # bcrypt of "password"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: dev
+    userID: 08a8684b-db88-4b73-90a9-3cd1661f5466

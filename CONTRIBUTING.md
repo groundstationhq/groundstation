@@ -19,6 +19,8 @@ cd ui && npm ci && npm run typecheck && npm run build
 
 `make ui` builds the UI, embeds it in a debug `gsd` and serves it on port 14318 over your real data, next to the installed daemon. `make ui-dev` runs the Vite dev server with hot reload instead, and `make check` runs what CI runs.
 
+The backend (ingest, api and the insights worker) runs on your machine against databases in Docker: `make stack` starts all of it in one terminal (or `make deps`, then `make api`, `make ingest` and `make worker` separately), and open http://127.0.0.1:8080. `make backend-test` runs its tests, including the ones that need the databases. [`docs/backend.md`](docs/backend.md) has the details.
+
 To try a change end to end without touching your real install:
 
 ```sh
@@ -31,7 +33,7 @@ RUST_LOG=gsd=debug cargo run -p gsd
 
 - One change per PR. Keep refactors separate from behaviour changes.
 - Add or update a test. Adapter changes need a fixture in `adapters/<agent>/tests/fixtures/` showing the real payload.
-- If you change the wire format, change `crates/schema`, `crates/api` and `ui/src/lib/types.ts` in the same PR.
+- If you change the wire format, change `crates/schema`, `crates/wire` and `ui/src/lib/types.ts` in the same PR.
 - Never log or persist content attributes outside the store, and never log tokens.
 - Commit subjects are turned into the changelog by `cliff.toml`, so write them as `UI: …`, `CLI: …`, `gsd: …`, `Add …`, `Fix …` or `Docs: …`. Don't edit `CHANGELOG.md` by hand.
 

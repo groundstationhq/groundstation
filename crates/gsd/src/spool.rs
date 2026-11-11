@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
-use groundstation_api::SpoolItem;
+use groundstation_wire::SpoolItem;
 use uuid::Uuid;
 
 use crate::ingest::Ingestor;
@@ -113,7 +113,7 @@ mod tests {
     use crate::config::Config;
     use crate::privacy::Privacy;
     use crate::store::Store;
-    use groundstation_api::HookEnvelope;
+    use groundstation_wire::HookEnvelope;
     use serde_json::json;
     use std::sync::Arc;
 

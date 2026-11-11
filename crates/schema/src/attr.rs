@@ -99,10 +99,17 @@ pub const CONTENT: &[&str] = &[
     SEARCH_PATTERN,
     ERROR_MESSAGE,
     NOTIFICATION_MESSAGE,
+    HTTP_URL,
 ];
 
 /// Attributes holding local filesystem paths.
 pub const PATHS: &[&str] = &[CWD, FILE_PATH, TRANSCRIPT_PATH, VCS_REPOSITORY];
 
-/// Keys inside a tool's input body that hold filesystem paths.
-pub const TOOL_INPUT_PATH_KEYS: &[&str] = &["file_path", "notebook_path", "path", "cwd"];
+/// Keys inside a tool's input body that hold filesystem paths (`filePath` is
+/// OpenCode's).
+pub const TOOL_INPUT_PATH_KEYS: &[&str] =
+    &["file_path", "notebook_path", "path", "cwd", "filePath"];
+
+/// Paths inside a tool's output body, as JSON pointers: Claude Code's file
+/// tools answer with the path they touched.
+pub const TOOL_OUTPUT_PATHS: &[&str] = &["/filePath", "/file/filePath"];

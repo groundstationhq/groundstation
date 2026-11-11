@@ -16,7 +16,6 @@ pub mod privacy;
 pub mod server;
 pub mod spool;
 pub mod store;
-pub mod ui;
 pub mod uploader;
 
 use std::sync::Arc;
@@ -41,7 +40,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     let store = Arc::new(Store::open(&config.db_path())?);
     let privacy = Privacy::new(&config)?.with_path_key(privacy::path_key(&data_dir)?);
-    let ingestor = Arc::new(Ingestor::new(store.clone(), privacy));
+    let ingestor = Arc::new(Ingestor::new(store.clone(), privacy.clone()));
 
     let listener = tokio::net::TcpListener::bind(config.daemon.listen)
         .await
@@ -73,6 +72,7 @@ pub async fn run(config: Config) -> Result<()> {
     tasks.spawn(uploader::run(
         config.clone(),
         store.clone(),
+        privacy,
         upload.clone(),
         shutdown_rx.clone(),
     ));
@@ -105,7 +105,11 @@ pub async fn run(config: Config) -> Result<()> {
         .await;
 
     while tasks.join_next().await.is_some() {}
-    let _ = std::fs::remove_file(&pid_file);
+    // A gsd started while this one finished may have written its own.
+    let ours = std::process::id().to_string();
+    if std::fs::read_to_string(&pid_file).is_ok_and(|p| p.trim() == ours) {
+        let _ = std::fs::remove_file(&pid_file);
+    }
     served.context("serving")
 }
 

@@ -12,8 +12,8 @@ use groundstation_adapter_claude_code::ClaudeCode;
 use groundstation_adapter_codex::Codex;
 use groundstation_adapter_opencode::OpenCode;
 use groundstation_adapter_pi::Pi;
-use groundstation_api::{ResyncFailure, ResyncResponse, SpoolItem};
 use groundstation_schema::{Adapter, Batch, Event, HookEnvelope, SCHEMA, attr};
+use groundstation_wire::{ResyncFailure, ResyncResponse, SpoolItem};
 use serde_json::Value;
 
 use crate::git::Repo;

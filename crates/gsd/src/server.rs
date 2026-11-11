@@ -8,17 +8,18 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use groundstation_api::{
+use groundstation_schema::{Batch, SCHEMA};
+use groundstation_wire::{
     Deployment, ErrorBody, Health, HookEnvelope, IngestResponse, ResyncResponse, ToolStats,
     TrajectoryDetail, TrajectorySummary, UploadStatus,
 };
-use groundstation_schema::{Batch, SCHEMA};
 use serde::Deserialize;
 use tokio::sync::watch;
 
@@ -46,11 +47,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/trajectories/{id}", get(get_trajectory))
         .route("/v1/stats/tools", get(tool_stats))
         .route("/v1/shutdown", post(shutdown))
-        .fallback(crate::ui::serve)
+        .fallback(groundstation_ui_embed::serve)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn(move |req, next| {
             check_host(listen, req, next)
         }))
+        .layer(middleware::from_fn(groundstation_ui_embed::no_store))
         .with_state(state)
 }
 
@@ -83,7 +85,7 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
         status: "ok".into(),
         deployment: Deployment::Local,
         features: Vec::new(),
-        ui: crate::ui::EMBEDDED,
+        ui: groundstation_ui_embed::EMBEDDED,
         adapters: s
             .ingestor
             .adapter_names()
@@ -92,8 +94,8 @@ async fn health(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
             .collect(),
         version: env!("CARGO_PKG_VERSION").into(),
         schema: SCHEMA.into(),
-        trajectories: counts.trajectories,
-        events: counts.events,
+        trajectories: Some(counts.trajectories),
+        events: Some(counts.events),
         pid: Some(std::process::id()),
         data_dir: Some(s.config.data_dir().display().to_string()),
         spool_pending: Some(crate::spool::pending(&s.config.spool_dir()).len()),
@@ -170,8 +172,9 @@ struct ListParams {
 
 async fn list_trajectories(
     State(s): State<AppState>,
-    Query(params): Query<ListParams>,
+    params: Result<Query<ListParams>, QueryRejection>,
 ) -> Result<Json<Vec<TrajectorySummary>>, ApiError> {
+    let Query(params) = params?;
     let store = s.ingestor.store.clone();
     let limit = params.limit.unwrap_or(50).clamp(1, 10_000);
     Ok(Json(
@@ -209,8 +212,9 @@ struct StatsParams {
 
 async fn tool_stats(
     State(s): State<AppState>,
-    Query(params): Query<StatsParams>,
+    params: Result<Query<StatsParams>, QueryRejection>,
 ) -> Result<Json<ToolStats>, ApiError> {
+    let Query(params) = params?;
     let days = params.days.unwrap_or(14).clamp(1, 365);
     let since = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
     let since_ns = since.timestamp_nanos_opt().unwrap_or(0);
@@ -242,6 +246,14 @@ pub struct ApiError(StatusCode, String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(ErrorBody { error: self.1 })).into_response()
+    }
+}
+
+/// A query string the endpoint can't read, in the same fixed words as the
+/// hosted api.
+impl From<QueryRejection> for ApiError {
+    fn from(_: QueryRejection) -> Self {
+        error(StatusCode::BAD_REQUEST, groundstation_wire::BAD_QUERY)
     }
 }
 
@@ -424,6 +436,37 @@ mod tests {
 
         let (_, body) = call(&app, "GET", "/v1/stats/tools?days=9999", host, None).await;
         assert_eq!(body["days"], 365);
+    }
+
+    #[tokio::test]
+    async fn a_bad_query_string_gets_the_json_error_any_failure_gets() {
+        let app = app();
+        for uri in ["/v1/trajectories?limit=abc", "/v1/stats/tools?days=-1"] {
+            let (status, body) = call(&app, "GET", uri, "127.0.0.1:4318", None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(
+                body["error"],
+                groundstation_wire::BAD_QUERY,
+                "{uri}: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn api_answers_are_never_cached() {
+        let app = app();
+        for (uri, host) in [
+            ("/v1/health", "127.0.0.1:4318"),
+            ("/v1/trajectories/nope", "127.0.0.1:4318"),
+            ("/v1/health", "evil.example:4318"),
+        ] {
+            let req = Request::get(uri)
+                .header("host", host)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.headers()["cache-control"], "no-store", "{uri} {host}");
+        }
     }
 
     #[tokio::test]

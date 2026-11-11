@@ -3,10 +3,11 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use groundstation_api::{
+use groundstation_wire::{
     ErrorBody, Health, IngestResponse, ResyncResponse, TrajectoryDetail, TrajectorySummary,
 };
 use gsd::config::Config;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -104,25 +105,30 @@ impl Client {
 }
 
 async fn decode<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         return Ok(resp.json().await?);
     }
-    let message = match resp.json::<ErrorBody>().await {
-        Ok(body) => body.error,
-        Err(_) => status.to_string(),
-    };
-    bail!("{message}")
+    bail!("{}", reason(resp).await)
 }
 
-fn encode(segment: &str) -> String {
-    segment
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+/// Why a host refused a request: the `error` of its answer, or the status
+/// when the answer isn't an error body.
+pub(crate) async fn reason(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    match resp.json::<ErrorBody>().await {
+        Ok(body) => body.error,
+        Err(_) => status.to_string(),
+    }
+}
+
+/// Everything but letters, digits and `-_.~`.
+const ENCODED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+/// Percent-encodes a path segment or a query value.
+pub(crate) fn encode(text: &str) -> String {
+    utf8_percent_encode(text, ENCODED).to_string()
 }

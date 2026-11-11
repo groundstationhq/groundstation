@@ -9,8 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use groundstation_api::{ToolLatency, TrajectorySummary};
 use groundstation_schema::{Event, EventKind, attr};
+use groundstation_wire::{ToolLatency, TrajectorySummary, summary};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::Value;
 
@@ -72,6 +72,9 @@ CREATE TABLE transcripts (
     // The repository's name outside this machine: its origin remote, or the
     // directory name.
     "ALTER TABLE trajectories ADD COLUMN origin TEXT;",
+    // How many times an event was updated after it was first stored, so an
+    // upload can tell whether what it sent is still what is stored.
+    "ALTER TABLE events ADD COLUMN version INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Store {
@@ -90,6 +93,27 @@ pub struct Pending {
     pub seq: i64,
     pub event: Event,
     pub place: Place,
+    /// The event's version when it was read.
+    version: i64,
+}
+
+impl Pending {
+    pub fn sent(&self) -> Sent {
+        Sent {
+            seq: self.seq,
+            version: self.version,
+        }
+    }
+}
+
+/// An event as it was read for upload. Marking it uploaded or refused applies
+/// only while it is still that version: an updated `model.completed` keeps its
+/// place in the queue, and an update that lands while the old version is on
+/// its way must be sent too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sent {
+    pub seq: i64,
+    version: i64,
 }
 
 /// Where a trajectory ran, as stored locally (under the path policy).
@@ -201,7 +225,8 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                      ts_ns = excluded.ts_ns, attributes = excluded.attributes,
-                     agent_version = excluded.agent_version, uploaded = 0, upload_attempts = 0
+                     agent_version = excluded.agent_version, uploaded = 0, upload_attempts = 0,
+                     version = events.version + 1
                  WHERE excluded.kind = 'model.completed' AND events.attributes != excluded.attributes",
                 params![
                     event.id.to_string(),
@@ -333,23 +358,25 @@ impl Store {
     pub fn list_trajectories(&self, limit: usize) -> Result<Vec<TrajectorySummary>> {
         let conn = self.conn();
         let sql = format!(
-            "{SUMMARY_SELECT} WHERE t.id IN (SELECT id FROM trajectories ORDER BY updated_ns DESC LIMIT ?1)
-             GROUP BY t.id ORDER BY t.updated_ns DESC"
+            "{} WHERE t.id IN (SELECT id FROM trajectories ORDER BY updated_ns DESC, id LIMIT ?1)
+             GROUP BY t.id ORDER BY t.updated_ns DESC, t.id",
+            summary_select()
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![limit as i64], summary_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Looks up a trajectory by id or unique id prefix.
+    /// Looks up a trajectory by id or unique id prefix: the prefix as written,
+    /// case and all (ids such as OpenCode's `ses_…` contain `_`).
     pub fn resolve_trajectory(&self, id_or_prefix: &str) -> Result<Resolved> {
         let conn = self.conn();
-        let pattern = format!("{}%", id_or_prefix.replace(['%', '_'], ""));
         let mut stmt = conn.prepare(
-            "SELECT id FROM trajectories WHERE id = ?1 OR id LIKE ?2 ORDER BY id = ?1 DESC LIMIT 5",
+            "SELECT id FROM trajectories WHERE substr(id, 1, length(?1)) = ?1
+             ORDER BY id = ?1 DESC, id LIMIT 5",
         )?;
         let ids: Vec<String> = stmt
-            .query_map(params![id_or_prefix, pattern], |r| r.get(0))?
+            .query_map(params![id_or_prefix], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         Ok(match ids.as_slice() {
             [] => Resolved::NotFound,
@@ -361,7 +388,7 @@ impl Store {
 
     pub fn trajectory(&self, id: &str) -> Result<Option<(TrajectorySummary, Vec<Event>)>> {
         let conn = self.conn();
-        let sql = format!("{SUMMARY_SELECT} WHERE t.id = ?1 GROUP BY t.id");
+        let sql = format!("{} WHERE t.id = ?1 GROUP BY t.id", summary_select());
         let Some(summary) = conn
             .query_row(&sql, params![id], summary_from_row)
             .optional()?
@@ -388,29 +415,38 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT e.seq, {columns}, t.repository, t.origin
+            "SELECT e.seq, {columns}, e.version, t.repository, t.origin
              FROM events e LEFT JOIN trajectories t ON t.id = e.trajectory_id
              WHERE e.uploaded = 0 ORDER BY e.seq LIMIT ?1"
         ))?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let seq: i64 = row.get(0)?;
+            let version: i64 = row.get(10)?;
             let place = Place {
-                repository: row.get(10)?,
-                origin: row.get(11)?,
+                repository: row.get(11)?,
+                origin: row.get(12)?,
             };
-            event_from_row_at(row, 1).map(|r| r.map(|event| Pending { seq, event, place }))
+            event_from_row_at(row, 1).map(|r| {
+                r.map(|event| Pending {
+                    seq,
+                    event,
+                    place,
+                    version,
+                })
+            })
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from).and_then(|e| e))
             .collect()
     }
 
-    pub fn mark_uploaded(&self, seqs: &[i64]) -> Result<()> {
+    pub fn mark_uploaded(&self, sent: &[Sent]) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare("UPDATE events SET uploaded = 1 WHERE seq = ?1")?;
-            for seq in seqs {
-                stmt.execute(params![seq])?;
+            let mut stmt =
+                tx.prepare("UPDATE events SET uploaded = 1 WHERE seq = ?1 AND version = ?2")?;
+            for s in sent {
+                stmt.execute(params![s.seq, s.version])?;
             }
         }
         tx.commit()?;
@@ -420,7 +456,7 @@ impl Store {
     /// Counts a backend rejection against each event. An event rejected
     /// `max_attempts` times leaves the upload queue but stays in the store.
     /// Returns the sequence numbers that were dropped.
-    pub fn record_rejections(&self, seqs: &[i64], max_attempts: i64) -> Result<Vec<i64>> {
+    pub fn record_rejections(&self, refused: &[Sent], max_attempts: i64) -> Result<Vec<i64>> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut dropped = Vec::new();
@@ -428,14 +464,14 @@ impl Store {
             let mut stmt = tx.prepare(
                 "UPDATE events SET upload_attempts = upload_attempts + 1,
                      uploaded = CASE WHEN upload_attempts + 1 >= ?2 THEN 2 ELSE 0 END
-                 WHERE seq = ?1 RETURNING uploaded",
+                 WHERE seq = ?1 AND version = ?3 RETURNING uploaded",
             )?;
-            for &seq in seqs {
+            for s in refused {
                 let state: Option<i64> = stmt
-                    .query_row(params![seq, max_attempts], |r| r.get(0))
+                    .query_row(params![s.seq, max_attempts, s.version], |r| r.get(0))
                     .optional()?;
                 if state == Some(2) {
-                    dropped.push(seq);
+                    dropped.push(s.seq);
                 }
             }
         }
@@ -449,11 +485,19 @@ impl Store {
     pub fn tool_latency(&self, since_ns: i64) -> Result<Vec<ToolLatency>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT COALESCE(json_extract(attributes, '$.\"{cat}\"'), json_extract(attributes, '$.\"{name}\"'), 'tool'),
+            // Durations are JSON numbers an i64 holds; categories fall back to
+            // the tool name and then 'tool' when missing or empty, as the
+            // hosted api reads them.
+            "SELECT CASE WHEN CAST(json_extract(attributes, '$.\"{cat}\"') AS TEXT) != ''
+                             THEN CAST(json_extract(attributes, '$.\"{cat}\"') AS TEXT)
+                         WHEN CAST(json_extract(attributes, '$.\"{name}\"') AS TEXT) != ''
+                             THEN CAST(json_extract(attributes, '$.\"{name}\"') AS TEXT)
+                         ELSE 'tool' END,
                     json_extract(attributes, '$.\"{dur}\"'), kind = 'tool.failed'
              FROM events
              WHERE kind IN ('tool.completed', 'tool.failed') AND ts_ns >= ?1
-               AND json_extract(attributes, '$.\"{dur}\"') IS NOT NULL
+               AND json_type(attributes, '$.\"{dur}\"') IN ('integer', 'real')
+               AND abs(json_extract(attributes, '$.\"{dur}\"')) < 9.2e18
              ORDER BY 1, 2",
             cat = attr::TOOL_CATEGORY,
             name = attr::GEN_AI_TOOL_NAME,
@@ -544,31 +588,13 @@ fn upsert_trajectory(
     ts: i64,
     host: Option<&str>,
 ) -> Result<()> {
-    let status = match event.kind {
-        EventKind::AgentCompleted => Some("completed"),
-        EventKind::AgentFailed => Some("failed"),
-        EventKind::AgentCancelled => Some("cancelled"),
-        EventKind::AgentPaused => Some("paused"),
-        EventKind::TurnCompleted | EventKind::TurnInterrupted => Some("idle"),
-        EventKind::AgentNotification => Some("waiting"),
-        EventKind::AgentStarted
-        | EventKind::AgentResumed
-        | EventKind::TurnUser
-        | EventKind::ToolStarted
-        | EventKind::ToolCompleted
-        | EventKind::ToolFailed
-        | EventKind::SubagentStarted
-        | EventKind::ContextCompacted => Some("running"),
-        // Model calls are read from transcripts after the fact; they say
-        // nothing about what the agent is doing now.
-        _ => None,
-    };
+    let status = summary::status_after(&event.kind);
     let ended = event.kind.is_terminal().then_some(ts);
     let title = match event.kind {
         EventKind::TurnUser => event
             .get(attr::PROMPT_TEXT)
             .and_then(Value::as_str)
-            .map(title_from_prompt),
+            .map(summary::title_from_prompt),
         _ => None,
     };
     let cwd = event.get(attr::CWD).and_then(Value::as_str);
@@ -587,7 +613,7 @@ fn upsert_trajectory(
         "UPDATE trajectories SET
              status = CASE WHEN ?2 IS NOT NULL AND ?3 >= updated_ns THEN ?2 ELSE status END,
              ended_ns = CASE
-                 WHEN ?4 IS NOT NULL THEN MAX(COALESCE(ended_ns, 0), ?4)
+                 WHEN ?4 IS NOT NULL THEN MAX(COALESCE(ended_ns, ?4), ?4)
                  WHEN ?2 = 'running' AND ?3 >= updated_ns THEN NULL
                  ELSE ended_ns END,
              started_ns = MIN(started_ns, ?3),
@@ -659,35 +685,41 @@ fn fill_checkout(tx: &rusqlite::Transaction<'_>, event: &mut Event, ts: i64) -> 
     Ok(())
 }
 
-fn title_from_prompt(prompt: &str) -> String {
-    let line = prompt
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
-    let mut title: String = line.chars().take(120).collect();
-    if title.len() < line.len() {
-        title.push('…');
-    }
-    title
+/// What every summary query selects. Token counts read as the hosted api's
+/// ClickHouse columns read them: a whole number of at least zero, from a JSON
+/// number or a numeric string, and 0 for anything else. Kinds compare
+/// case-sensitively (`GLOB`, not `LIKE`).
+fn summary_select() -> &'static str {
+    static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let tokens = |key: &str| {
+            let at = format!("e.attributes, '$.\"{key}\"'");
+            format!(
+                "CAST(TOTAL(CASE WHEN json_type({at}) IN ('integer', 'real', 'text')
+                     AND abs(CAST(json_extract({at}) AS REAL)) < 9.2e18
+                     THEN MAX(0, CAST(json_extract({at}) AS INTEGER)) END) AS INTEGER)"
+            )
+        };
+        format!(
+            "SELECT t.id, t.agent, t.agent_version, t.title, t.status, t.cwd, t.repository, t.branch, t.host,
+                    t.started_ns, t.updated_ns, t.ended_ns,
+                    COUNT(e.id),
+                    COALESCE(SUM(e.kind = 'turn.user'), 0),
+                    COALESCE(SUM(e.kind = 'model.completed'), 0),
+                    COUNT(DISTINCT CASE WHEN e.kind GLOB 'tool.*' THEN COALESCE(e.span_id, e.id) END),
+                    COALESCE(SUM(e.kind = 'tool.failed'), 0),
+                    {input}, {output}, {cache_read}, {cache_creation},
+                    COALESCE(SUM(json_extract(e.attributes, '$.\"{cost}\"')), 0.0),
+                    t.revision
+             FROM trajectories t LEFT JOIN events e ON e.trajectory_id = t.id",
+            input = tokens(attr::GEN_AI_INPUT_TOKENS),
+            output = tokens(attr::GEN_AI_OUTPUT_TOKENS),
+            cache_read = tokens(attr::CACHE_READ_TOKENS),
+            cache_creation = tokens(attr::CACHE_CREATION_TOKENS),
+            cost = attr::COST_USD,
+        )
+    });
+    &SQL
 }
-
-const SUMMARY_SELECT: &str = r#"
-SELECT t.id, t.agent, t.agent_version, t.title, t.status, t.cwd, t.repository, t.branch, t.host,
-       t.started_ns, t.updated_ns, t.ended_ns,
-       COUNT(e.id),
-       COALESCE(SUM(e.kind = 'turn.user'), 0),
-       COALESCE(SUM(e.kind = 'model.completed'), 0),
-       COUNT(DISTINCT CASE WHEN e.kind LIKE 'tool.%' THEN COALESCE(e.span_id, e.id) END),
-       COALESCE(SUM(e.kind = 'tool.failed'), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gen_ai.usage.input_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gen_ai.usage.output_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_read_input_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gs.usage.cache_creation_input_tokens"')), 0),
-       COALESCE(SUM(json_extract(e.attributes, '$."gs.cost.usd"')), 0.0),
-       t.revision
-FROM trajectories t LEFT JOIN events e ON e.trajectory_id = t.id
-"#;
 
 fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<TrajectorySummary> {
     let started: i64 = r.get(9)?;
@@ -717,7 +749,7 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<TrajectorySummary> {
         output_tokens: count(r, 18)?,
         cache_read_tokens: count(r, 19)?,
         cache_creation_tokens: count(r, 20)?,
-        cost_usd: r.get::<_, f64>(21)?,
+        cost_usd: summary::cost_usd(r.get::<_, f64>(21)?),
     })
 }
 
@@ -912,16 +944,53 @@ mod tests {
         let mut model = ev("a", EventKind::ModelCompleted, Utc::now());
         model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
         store.insert(vec![new(model.clone())]).unwrap();
-        let seq = store.pending_upload(1).unwrap()[0].seq;
-        assert!(store.record_rejections(&[seq], 2).unwrap().is_empty());
-        assert_eq!(store.record_rejections(&[seq], 2).unwrap(), vec![seq]);
+        let sent = store.pending_upload(1).unwrap()[0].sent();
+        assert!(
+            store
+                .record_rejections(std::slice::from_ref(&sent), 2)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .record_rejections(std::slice::from_ref(&sent), 2)
+                .unwrap(),
+            vec![sent.seq]
+        );
         assert_eq!(store.counts().unwrap().dropped_upload, 1);
 
         model.set(attr::GEN_AI_OUTPUT_TOKENS, 2);
         store.insert(vec![new(model)]).unwrap();
         let counts = store.counts().unwrap();
         assert_eq!((counts.pending_upload, counts.dropped_upload), (1, 0));
-        assert!(store.record_rejections(&[seq], 2).unwrap().is_empty());
+        let sent = store.pending_upload(1).unwrap()[0].sent();
+        assert!(store.record_rejections(&[sent], 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_update_while_the_old_version_uploads_is_sent_too() {
+        let store = Store::open_in_memory().unwrap();
+        let mut model = ev("a", EventKind::ModelCompleted, Utc::now());
+        model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
+        store.insert(vec![new(model.clone())]).unwrap();
+        let first = store.pending_upload(1).unwrap()[0].sent();
+
+        // The transcript grows while the first version is on its way.
+        model.set(attr::GEN_AI_OUTPUT_TOKENS, 4242);
+        store.insert(vec![new(model)]).unwrap();
+        store.mark_uploaded(std::slice::from_ref(&first)).unwrap();
+        assert_eq!(
+            store.record_rejections(&[first], 1).unwrap(),
+            Vec::<i64>::new()
+        );
+
+        let pending = store.pending_upload(10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].event.get(attr::GEN_AI_OUTPUT_TOKENS),
+            Some(&4242.into())
+        );
+        assert_eq!(store.counts().unwrap().dropped_upload, 0);
     }
 
     #[test]
@@ -934,7 +1003,13 @@ mod tests {
         let mut model = ev("t1", EventKind::ModelCompleted, Utc::now());
         model.set(attr::GEN_AI_OUTPUT_TOKENS, 1);
         assert_eq!(store.insert(vec![new(model.clone())]).unwrap(), 1);
-        store.mark_uploaded(&[1, 2]).unwrap();
+        let sent: Vec<Sent> = store
+            .pending_upload(10)
+            .unwrap()
+            .iter()
+            .map(Pending::sent)
+            .collect();
+        store.mark_uploaded(&sent).unwrap();
         assert_eq!(store.insert(vec![new(model.clone())]).unwrap(), 0);
         model.set(attr::GEN_AI_OUTPUT_TOKENS, 42);
         assert_eq!(store.insert(vec![new(model)]).unwrap(), 1);

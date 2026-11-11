@@ -1,224 +1,214 @@
-//! Types exchanged over the Ground Station HTTP API: gsd's local `/v1` and the
-//! hosted backend serve the same shapes. No I/O, so any host can depend on it.
+//! Ground Station hosted API: serves the built UI and the same `/v1` read
+//! contract gsd serves locally, scoped to the signed-in tenant, plus `/auth/*`
+//! for signing in. Migrates both databases at startup.
 
-use chrono::{DateTime, Utc};
-use groundstation_schema::{Batch, Event};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+pub mod accounts;
+pub mod auth;
+pub mod config;
+mod error;
+mod insights;
+pub mod queries;
+mod recent;
+pub mod sessions;
+mod tokens;
+mod v1;
 
-pub use groundstation_schema::HookEnvelope;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// What the hook writes to the spool directory when the daemon is unreachable.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "body", rename_all = "kebab-case")]
-pub enum SpoolItem {
-    /// A hook payload for the named adapter.
-    Hook {
-        adapter: String,
-        envelope: HookEnvelope,
-    },
-    Batch(Batch),
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::middleware;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use groundstation_backend::ch::{Clickhouse, TenantScope, schema};
+use groundstation_backend::config::Service;
+use groundstation_backend::pg::{self, Pool};
+use groundstation_backend::{health, service};
+
+use crate::accounts::Signup;
+use crate::auth::oidc::Oidc;
+use crate::auth::{Throttle, Viewer};
+pub use crate::config::Config;
+use crate::error::ApiError;
+use crate::recent::{Busy, Recent};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub clickhouse: Clickhouse,
+    pub pg: Pool,
+    oidc: Option<Arc<Oidc>>,
+    password_attempts: Arc<Throttle>,
+    /// Per tenant and limit: the trajectory list as JSON, as last answered.
+    lists: Arc<Recent<(uuid::Uuid, u32), Bytes>>,
+    /// Per tenant: reads of ClickHouse running at once.
+    reads: Arc<Mutex<HashMap<uuid::Uuid, Arc<Semaphore>>>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct IngestResponse {
-    /// Events produced by this request that were new or changed.
-    pub stored: usize,
-    /// Events the receiver refused, each with the reason. The rest of the
-    /// batch was accepted. gsd never rejects; the hosted backend may.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rejected: Vec<Rejection>,
-}
+/// How long a tenant's trajectory list is reused. Listing summarizes every
+/// event of the trajectories it names, and every open tab asks every five
+/// seconds: within this long they all get the same answer, computed once.
+const LIST_TTL: Duration = Duration::from_secs(5);
 
-/// One event a receiver refused (`IngestResponse::rejected`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Rejection {
-    pub id: Uuid,
-    pub error: String,
-}
+/// Reads one tenant may run at once on this instance, so no tenant takes the
+/// ClickHouse every tenant shares; and how long a read waits for its turn.
+const READS_PER_TENANT: usize = 4;
+const READ_WAIT: Duration = Duration::from_secs(10);
 
-/// Result of re-reading an adapter's transcripts (`POST /v1/adapters/{name}/resync`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ResyncResponse {
-    /// Transcripts read again from the start.
-    pub transcripts: usize,
-    /// Events that were new or changed.
-    pub events: usize,
-    /// Transcripts that could not be read, e.g. deleted since.
-    pub failed: Vec<ResyncFailure>,
-    /// Transcripts under the adapter's directories that no stored hook links
-    /// to a trajectory, so they were skipped.
-    pub unmatched: Vec<String>,
-}
+/// Tenants remembered before idle ones are forgotten.
+const TENANTS_KEPT: usize = 10_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResyncFailure {
-    pub path: String,
-    pub error: String,
-}
+impl AppState {
+    pub fn new(mut config: Config) -> anyhow::Result<Self> {
+        config.check()?;
+        Ok(Self {
+            clickhouse: Clickhouse::connect(&config.clickhouse, Service::Api),
+            pg: pg::connect(&config.postgres)?,
+            oidc: Oidc::new(&config.sign_in, &config.public_url)?.map(Arc::new),
+            password_attempts: Arc::default(),
+            lists: Arc::new(Recent::new(LIST_TTL, READ_WAIT)),
+            reads: Arc::default(),
+            config: Arc::new(config),
+        })
+    }
 
-/// `GET /v1/health`. Both hosts serve it; the fields that only describe a
-/// daemon on one machine are `None` on the hosted backend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Health {
-    pub status: String,
-    /// Which host is answering.
-    #[serde(default)]
-    pub deployment: Deployment,
-    /// Optional endpoint groups this host serves (e.g. `insights`), for the UI
-    /// to feature-detect. Empty for gsd.
-    #[serde(default)]
-    pub features: Vec<String>,
-    /// Whether this host serves the UI at `/` (false for builds without `ui/dist`).
-    #[serde(default)]
-    pub ui: bool,
-    /// Adapters this host accepts at `/v1/adapters/{name}`.
-    pub adapters: Vec<String>,
-    pub version: String,
-    pub schema: String,
-    pub trajectories: u64,
-    pub events: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spool_pending: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upload: Option<UploadStatus>,
-}
+    /// The viewer's tenant's `limit` most recently updated trajectories, as
+    /// the JSON `/v1/trajectories` answers with, at most [`LIST_TTL`] old.
+    /// Only a request that finds none that recent takes one of the tenant's
+    /// read turns; those arriving meanwhile wait for its answer, as long as
+    /// they would wait for a turn.
+    async fn list(&self, viewer: &Viewer, limit: u32) -> Result<Bytes, ApiError> {
+        self.lists
+            .get((viewer.tenant_id, limit), || async {
+                let (scope, _turn) = self.read(viewer).await?;
+                let list = queries::trajectories::list(&scope, limit).await?;
+                Ok(serde_json::to_vec(&list)
+                    .expect("summaries serialize")
+                    .into())
+            })
+            .await
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Deployment {
-    /// gsd on the user's machine.
-    #[default]
-    Local,
-    /// The hosted backend.
-    Hosted,
-}
+    /// Reads limited to the viewer's tenant, and a turn to run them: one of
+    /// [`READS_PER_TENANT`], held until the permit is dropped.
+    async fn read(&self, viewer: &Viewer) -> Result<(TenantScope, OwnedSemaphorePermit), ApiError> {
+        let turns = turns_for(&self.reads, viewer.tenant_id, TENANTS_KEPT);
+        let turn = tokio::time::timeout(READ_WAIT, turns.acquire_owned())
+            .await
+            .map_err(|_| Busy)?
+            .map_err(|_| Busy)?;
+        Ok((self.scope(viewer), turn))
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UploadStatus {
-    /// `local-only` or `cloud`.
-    pub mode: String,
-    /// `None` in local-only mode.
-    pub endpoint: Option<String>,
-    pub pending: u64,
-    /// Events dropped from the upload queue after the backend rejected them
-    /// repeatedly. They stay in the local store.
-    #[serde(default)]
-    pub dropped: u64,
-    /// The most recent failed upload, cleared by the next success.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<UploadError>,
-}
+    /// Reads limited to the viewer's tenant.
+    fn scope(&self, viewer: &Viewer) -> TenantScope {
+        self.clickhouse.tenant(viewer.tenant_id)
+    }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UploadError {
-    pub message: String,
-    pub at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrajectorySummary {
-    pub id: String,
-    pub agent: String,
-    pub agent_version: Option<String>,
-    pub title: Option<String>,
-    pub status: String,
-    pub cwd: Option<String>,
-    pub repository: Option<String>,
-    pub branch: Option<String>,
-    /// The commit checked out at the trajectory's latest event. Each event
-    /// carries its own in `gs.vcs.revision`.
-    #[serde(default)]
-    pub revision: Option<String>,
-    pub host: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub duration_ms: i64,
-    pub event_count: u64,
-    pub user_turns: u64,
-    pub model_calls: u64,
-    pub tool_calls: u64,
-    pub tool_errors: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-    /// Sum of `gs.cost.usd`; 0 when the agent doesn't report cost.
-    #[serde(default)]
-    pub cost_usd: f64,
-}
-
-impl TrajectorySummary {
-    /// Every token the model processed or produced, cached or not.
-    pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+    fn signup(&self) -> Signup {
+        Signup {
+            new_users: self.config.sign_in.new_users,
+            retention_days: self.config.retention_days,
+        }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrajectoryDetail {
-    #[serde(flatten)]
-    pub summary: TrajectorySummary,
-    pub events: Vec<Event>,
+/// A read that waited [`READ_WAIT`] for its turn, or for another request's
+/// answer, and got neither.
+impl From<Busy> for ApiError {
+    fn from(_: Busy) -> Self {
+        Self::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "too many reads at once, retry shortly",
+        )
+    }
 }
 
-/// Tool latency by category over a window (`GET /v1/stats/tools?days=N`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolStats {
-    pub days: u32,
-    pub since: DateTime<Utc>,
-    /// Most-called first.
-    pub tools: Vec<ToolLatency>,
+/// A tenant's read turns. Past `kept` tenants, those no request is using are
+/// forgotten.
+fn turns_for(
+    reads: &Mutex<HashMap<uuid::Uuid, Arc<Semaphore>>>,
+    tenant: uuid::Uuid,
+    kept: usize,
+) -> Arc<Semaphore> {
+    let mut all = reads.lock().unwrap_or_else(|e| e.into_inner());
+    if all.len() >= kept {
+        // A request holds a clone from before it waits for a turn until after
+        // it gives the turn back: forgetting those would give the tenant a
+        // second set of turns.
+        all.retain(|_, turns| Arc::strong_count(turns) > 1);
+    }
+    all.entry(tenant)
+        .or_insert_with(|| Arc::new(Semaphore::new(READS_PER_TENANT)))
+        .clone()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolLatency {
-    /// `gs.tool.category`, or the tool name when the adapter set none.
-    pub category: String,
-    pub calls: u64,
-    pub failed: u64,
-    pub p50_ms: i64,
-    pub p95_ms: i64,
-    pub max_ms: i64,
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .merge(v1::routes())
+        .merge(tokens::routes())
+        .merge(insights::routes())
+        .merge(auth::routes())
+        .route("/healthz", get(healthz))
+        .fallback(groundstation_ui_embed::serve)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::same_origin,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::https_only,
+        ))
+        .layer(middleware::from_fn(groundstation_ui_embed::no_store))
+        .with_state(state)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorBody {
-    pub error: String,
+async fn healthz(State(s): State<AppState>) -> impl IntoResponse {
+    health::report(&s.clickhouse, &s.pg).await
+}
+
+/// Brings both databases up to this version's schema. Safe to run from
+/// several instances at once.
+pub async fn migrate(config: &Config) -> anyhow::Result<()> {
+    let pool = pg::connect(&config.postgres)?;
+    pg::migrate(&pool).await?;
+    let admin = Clickhouse::connect_admin(&config.clickhouse, &config.clickhouse_admin);
+    schema::migrate(&admin).await?;
+    Ok(())
+}
+
+pub async fn run(config: Config) -> anyhow::Result<()> {
+    let state = AppState::new(config)?;
+    migrate(&state.config).await?;
+    let listen = state.config.listen;
+    service::serve("groundstation-api", listen, router(state)).await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::*;
 
     #[test]
-    fn health_reads_older_daemons_and_the_hosted_backend() {
-        // A gsd from before `deployment` and `features` existed.
-        let old: Health = serde_json::from_str(
-            r#"{"status":"ok","adapters":[],"version":"0.1.2","schema":"groundstation.telemetry.v0",
-                "pid":7,"data_dir":"/d","trajectories":1,"events":2,"spool_pending":0,
-                "upload":{"mode":"local-only","endpoint":null,"pending":0}}"#,
-        )
-        .unwrap();
-        assert_eq!(old.deployment, Deployment::Local);
-        assert_eq!(old.pid, Some(7));
-        assert_eq!(old.upload.unwrap().last_error, None);
-
-        // The hosted backend leaves out what only describes one machine.
-        let hosted: Health = serde_json::from_str(
-            r#"{"status":"ok","deployment":"hosted","features":["insights"],"adapters":[],
-                "version":"1.0.0","schema":"groundstation.telemetry.v0","trajectories":1,"events":2}"#,
-        )
-        .unwrap();
-        assert_eq!(hosted.deployment, Deployment::Hosted);
-        assert_eq!(hosted.features, ["insights"]);
-        assert_eq!((hosted.pid, hosted.upload.is_none()), (None, true));
-        let json = serde_json::to_value(&hosted).unwrap();
-        assert!(json.get("pid").is_none() && json.get("upload").is_none());
+    fn turns_a_request_holds_are_never_forgotten() {
+        let reads = Mutex::new(HashMap::new());
+        let (busy, idle) = (Uuid::now_v7(), Uuid::now_v7());
+        // A request has the tenant's turns and hasn't taken one yet.
+        let held = turns_for(&reads, busy, 2);
+        drop(turns_for(&reads, idle, 2));
+        // Two tenants kept: the next one forgets those nobody uses.
+        drop(turns_for(&reads, Uuid::now_v7(), 2));
+        assert!(!reads.lock().unwrap().contains_key(&idle));
+        assert!(
+            Arc::ptr_eq(&held, &turns_for(&reads, busy, 3)),
+            "the tenant got a second set of turns"
+        );
     }
 }

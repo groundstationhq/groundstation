@@ -1,0 +1,42 @@
+# The edge: one origin for everything. `POST /v1/events` (uploads from gsd)
+# goes to ingest; everything else (the UI, /v1 reads, /auth) goes to api.
+# Upstreams come from the environment: the services on your machine during
+# development, the containers when self-hosting.
+{
+	admin off
+	# Errors only: Caddy writes every aborted response with all its request
+	# headers at warn, so anyone could fill the disk with large headers.
+	log {
+		level ERROR
+	}
+	# A slow client can't hold a connection open forever. Bodies get longer
+	# than ingest's own 30 s, so ingest is the one that answers 408.
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 60s
+		}
+	}
+}
+
+:8080 {
+	@ingest {
+		method POST
+		path /v1/events
+	}
+	handle @ingest {
+		# Compressed batches; ingest also limits the inflated size.
+		request_body {
+			max_size 8MiB
+		}
+		reverse_proxy {$INGEST_UPSTREAM}
+	}
+	# The services' own health checks say which database is down and why:
+	# for whoever runs them, not for the internet.
+	handle /healthz {
+		respond 404
+	}
+	handle {
+		reverse_proxy {$API_UPSTREAM}
+	}
+}

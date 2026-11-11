@@ -157,9 +157,7 @@ impl Config {
             None => (config_file(), false),
         };
         let mut config: Config = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
-            }
+            Ok(text) => toml::from_str(&text).map_err(|e| parse_error(&path, &text, &e))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Config::default(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
@@ -250,9 +248,34 @@ pub fn config_file() -> PathBuf {
 /// The upload token and the events go with every request, so the endpoint must
 /// be `https://`. Plain `http://` is allowed only to this machine, for a
 /// backend running locally.
-fn check_endpoint(endpoint: &str) -> Result<()> {
+/// Where a config file doesn't parse, and why, without the text of the line:
+/// that line may hold the upload token, and the error is printed everywhere.
+fn parse_error(path: &Path, text: &str, e: &toml::de::Error) -> anyhow::Error {
+    let at = e
+        .span()
+        .map(|span| {
+            let before = text.get(..span.start).unwrap_or(text);
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+            format!(", line {line}, column {column}")
+        })
+        .unwrap_or_default();
+    anyhow::anyhow!("parsing {}{at}: {}", path.display(), e.message().trim())
+}
+
+pub fn check_endpoint(endpoint: &str) -> Result<()> {
     let url = reqwest::Url::parse(endpoint)
         .with_context(|| format!("transport.endpoint {endpoint:?} is not a URL"))?;
+    // Checked before anything below repeats the endpoint.
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!(
+            "transport.endpoint must not carry a user name or password: \
+             the upload token goes in transport.token"
+        );
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("transport.endpoint is the backend's address, without a ?query or #fragment");
+    }
     let loopback = url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
             || host
@@ -336,12 +359,35 @@ mod tests {
             "http://localhost.evil.example",
             "ftp://ingest.groundstation.sh",
             "ingest.groundstation.sh",
+            "https://ana:hunter22@ingest.groundstation.sh",
+            "https://ana@ingest.groundstation.sh",
+            "https://ingest.groundstation.sh/?x=1",
+            "https://ingest.groundstation.sh/#top",
         ] {
             assert!(with(bad).is_err(), "{bad}");
         }
+        let refused = with("https://ana:hunter22@gs.example").unwrap_err();
+        assert!(!format!("{refused:#}").contains("hunter22"));
         // Local-only mode never uploads, so the endpoint isn't checked.
         let local: Config =
             toml::from_str("[transport]\nendpoint = \"http://example.com\"").unwrap();
         assert!(local.validate().is_ok());
+    }
+
+    #[test]
+    fn a_config_that_doesnt_parse_isnt_repeated_back() {
+        let dir = std::env::temp_dir().join(format!("gsd-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // A token pasted without quotes, as it comes off the Tokens page.
+        std::fs::write(
+            &path,
+            "[transport]\nmode = \"cloud\"\ntoken = gsi_secret_value\n",
+        )
+        .unwrap();
+        let shown = format!("{:#}", Config::load(Some(&path)).unwrap_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!shown.contains("gsi_secret_value"), "{shown}");
+        assert!(shown.contains("line 3, column 9"), "{shown}");
     }
 }

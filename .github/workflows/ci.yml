@@ -15,6 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The UI is built below; fail rather than test the placeholder page.
+      GS_UI_REQUIRED: 1
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -49,3 +52,31 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  # The backend's tests against real ClickHouse, Postgres and Dex, started from
+  # the same docker-compose.yml developers use.
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start the databases
+        run: docker compose --profile dev up -d --wait clickhouse postgres dex
+      - name: Test against them
+        run: >-
+          cargo test -p groundstation-backend -p groundstation-ingest
+          -p groundstation-api -p groundstation-worker -- --include-ignored
+      - name: Check the edge
+        run: docker/caddy/test.sh
+      - name: Container logs
+        if: failure()
+        run: docker compose --profile dev logs --no-color
+
+  # The image self-hosters build: it must build, with the UI in it.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        run: docker build --tag groundstation-server:ci .

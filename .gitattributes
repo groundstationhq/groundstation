@@ -1,0 +1,3 @@
+# Scripts run inside Linux containers: a CRLF checkout breaks their shebang.
+*.sh text eol=lf
+docker/** text eol=lf

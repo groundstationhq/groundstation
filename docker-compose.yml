@@ -1,0 +1,211 @@
+# Ground Station's backend: ClickHouse and Postgres, plus what you need around
+# them. Everything binds to 127.0.0.1.
+#
+# Development (the services run on your machine with cargo; `make deps`):
+#   docker compose --profile dev up -d --wait
+#     adds Dex, a local OpenID Connect provider (dev@groundstation.test /
+#     "password"), and the edge on http://127.0.0.1:8080, which routes to the
+#     services on your machine.
+#
+# Self-hosting (the services run here too, from the Dockerfile), as its own
+# project so it never starts on a development database:
+#   docker compose -p groundstation-selfhost --profile selfhost up -d --build
+#     Set your own passwords and sign-in in a .env file first: see
+#     docs/backend.md. The edge is on http://127.0.0.1:8080; put your TLS
+#     proxy in front of it.
+#
+# Stopping names the profile, or its services keep running:
+#   docker compose --profile dev down                                   # make deps-down
+#   docker compose -p groundstation-selfhost --profile selfhost down    # data stays in the volumes
+#   docker compose -p groundstation-selfhost --profile selfhost down -v # and is deleted
+#
+# The defaults are for development and match the services' own defaults
+# (`--help` on any of them).
+
+name: groundstation
+
+# Each service gets its own database credentials below: a ClickHouse user and,
+# for ingest and the worker, a Postgres role that can do only what it needs.
+x-service-env: &service-env
+  GROUNDSTATION_CLICKHOUSE_URL: http://clickhouse:8123
+  RUST_LOG: ${RUST_LOG:-info}
+
+# Docker keeps container logs unless told; anyone can make the edge log.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.9.7.9
+    environment:
+      CLICKHOUSE_DB: groundstation
+      CLICKHOUSE_USER: groundstation
+      CLICKHOUSE_PASSWORD: ${GROUNDSTATION_CLICKHOUSE_ADMIN_PASSWORD:-groundstation}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      GS_INGEST_PASSWORD: ${GROUNDSTATION_INGEST_CLICKHOUSE_PASSWORD:-groundstation}
+      GS_API_PASSWORD: ${GROUNDSTATION_API_CLICKHOUSE_PASSWORD:-groundstation}
+      GS_WORKER_PASSWORD: ${GROUNDSTATION_WORKER_CLICKHOUSE_PASSWORD:-groundstation}
+    ports:
+      - 127.0.0.1:8123:8123 # HTTP
+      - 127.0.0.1:9000:9000 # native protocol, for clickhouse-client
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      # Runs once, when the data volume is new: creates the per-service users.
+      - ./docker/clickhouse/users.sh:/docker-entrypoint-initdb.d/users.sh:ro
+      # Keeps ClickHouse's own logs and system tables from growing forever.
+      - ./docker/clickhouse/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # Over the network, as the services connect: the server the image runs
+    # while it initializes answers only inside the container.
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --host \"$$(hostname)\" --user groundstation --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    logging: *logging
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: groundstation
+      POSTGRES_USER: groundstation
+      POSTGRES_PASSWORD: ${GROUNDSTATION_POSTGRES_PASSWORD:-groundstation}
+      GS_INGEST_PASSWORD: ${GROUNDSTATION_INGEST_POSTGRES_PASSWORD:-groundstation}
+      GS_WORKER_PASSWORD: ${GROUNDSTATION_WORKER_POSTGRES_PASSWORD:-groundstation}
+    ports:
+      - 127.0.0.1:5432:5432
+    volumes:
+      # Postgres 18 images keep data in a versioned directory under this path.
+      - postgres-data:/var/lib/postgresql
+      # Runs once, when the data volume is new: creates the ingest and worker roles.
+      - ./docker/postgres/roles.sh:/docker-entrypoint-initdb.d/roles.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "groundstation", "--dbname", "groundstation"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    logging: *logging
+    restart: unless-stopped
+
+  # --- development -----------------------------------------------------------
+
+  # A local identity provider: sign in with OpenID Connect without a real one.
+  dex:
+    profiles: [dev]
+    image: dexidp/dex:v2.45.1
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - 127.0.0.1:5556:5556
+    volumes:
+      - ./docker/dex/config.yaml:/etc/dex/config.yaml:ro
+    logging: *logging
+
+  # One origin for the UI, the API and uploads, routing to the services on
+  # your machine. On Linux, run them listening on the Docker bridge's address
+  # (docs/backend.md says how), not 0.0.0.0: that would put them, and the
+  # development admin password, on your network.
+  edge:
+    profiles: [dev]
+    image: caddy:2.11.4
+    environment:
+      INGEST_UPSTREAM: host.docker.internal:4320
+      API_UPSTREAM: host.docker.internal:4321
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    logging: *logging
+
+  # --- self-hosting ----------------------------------------------------------
+
+  api:
+    profiles: [selfhost]
+    build: .
+    image: groundstation-server
+    pull_policy: build
+    command: ["groundstation-api"]
+    environment:
+      <<: *service-env
+      GROUNDSTATION_API_LISTEN: 0.0.0.0:4321
+      GROUNDSTATION_CLICKHOUSE_PASSWORD: ${GROUNDSTATION_API_CLICKHOUSE_PASSWORD:-groundstation}
+      GROUNDSTATION_CLICKHOUSE_ADMIN_PASSWORD: ${GROUNDSTATION_CLICKHOUSE_ADMIN_PASSWORD:-groundstation}
+      # The owner: api migrates, and grants the other two roles their privileges.
+      GROUNDSTATION_POSTGRES_URL: postgres://groundstation:${GROUNDSTATION_POSTGRES_PASSWORD:-groundstation}@postgres:5432/groundstation
+      GROUNDSTATION_PUBLIC_URL: ${GROUNDSTATION_PUBLIC_URL:-http://127.0.0.1:8080}
+      GROUNDSTATION_ADMIN_PASSWORD: ${GROUNDSTATION_ADMIN_PASSWORD:-}
+      GROUNDSTATION_OIDC_ISSUER: ${GROUNDSTATION_OIDC_ISSUER:-}
+      GROUNDSTATION_OIDC_CLIENT_ID: ${GROUNDSTATION_OIDC_CLIENT_ID:-}
+      GROUNDSTATION_OIDC_CLIENT_SECRET: ${GROUNDSTATION_OIDC_CLIENT_SECRET:-}
+      GROUNDSTATION_OIDC_NAME: ${GROUNDSTATION_OIDC_NAME:-single sign-on}
+      GROUNDSTATION_OIDC_ALLOWED_DOMAINS: ${GROUNDSTATION_OIDC_ALLOWED_DOMAINS:-}
+      GROUNDSTATION_NEW_USERS: ${GROUNDSTATION_NEW_USERS:-shared}
+      GROUNDSTATION_RETENTION_DAYS: ${GROUNDSTATION_RETENTION_DAYS:-90}
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+    # Longer than the 25 s api and ingest take to finish what's in flight.
+    stop_grace_period: 30s
+    logging: *logging
+
+  ingest:
+    profiles: [selfhost]
+    # Built for api above; never pulled.
+    image: groundstation-server
+    pull_policy: never
+    command: ["groundstation-ingest"]
+    environment:
+      <<: *service-env
+      GROUNDSTATION_INGEST_LISTEN: 0.0.0.0:4320
+      GROUNDSTATION_CLICKHOUSE_PASSWORD: ${GROUNDSTATION_INGEST_CLICKHOUSE_PASSWORD:-groundstation}
+      GROUNDSTATION_POSTGRES_URL: postgres://gs_ingest:${GROUNDSTATION_INGEST_POSTGRES_PASSWORD:-groundstation}@postgres:5432/groundstation
+    depends_on:
+      api: { condition: service_started }
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *logging
+
+  worker:
+    profiles: [selfhost]
+    image: groundstation-server
+    pull_policy: never
+    command: ["groundstation-worker"]
+    environment:
+      <<: *service-env
+      GROUNDSTATION_CLICKHOUSE_PASSWORD: ${GROUNDSTATION_WORKER_CLICKHOUSE_PASSWORD:-groundstation}
+      GROUNDSTATION_POSTGRES_URL: postgres://gs_worker:${GROUNDSTATION_WORKER_POSTGRES_PASSWORD:-groundstation}@postgres:5432/groundstation
+    depends_on:
+      api: { condition: service_started }
+    restart: unless-stopped
+    logging: *logging
+
+  edge-selfhost:
+    profiles: [selfhost]
+    image: caddy:2.11.4
+    environment:
+      INGEST_UPSTREAM: ingest:4320
+      API_UPSTREAM: api:4321
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [api, ingest]
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  clickhouse-data:
+  postgres-data:

@@ -4,25 +4,27 @@ import { SortToggle, type Order } from "@/components/ui/SortToggle";
 import { Empty } from "@/components/Shell";
 import { trajectories } from "@/lib/api";
 import { useAsync } from "@/lib/use-async";
-import { cx, fmtDur, fmtInt, fmtTokens, shortRev, tilde } from "@/lib/format";
+import { useHost } from "@/lib/host";
+import { ago, byTime, cx, fmtDur, fmtInt, fmtPct, fmtTokens, percentile, shortRev, tilde } from "@/lib/format";
 import { cacheHit, promptTokens, totalTokens, type TrajectorySummary } from "@/lib/types";
 
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-
-const STATUS: Record<string, { dot: "running" | "ok" | "err" | "warn" | "idle"; label: string; cls: string }> = {
+/** How each `TrajectoryStatus` reads, everywhere a trajectory's status shows. */
+export const STATUS: Record<string, { dot: "running" | "ok" | "err" | "warn" | "idle"; label: string; cls: string }> = {
   running: { dot: "running", label: "Running", cls: "text-model" },
   idle: { dot: "idle", label: "Idle", cls: "text-fg-3" },
   waiting: { dot: "idle", label: "Waiting", cls: "text-fg-3" },
+  paused: { dot: "idle", label: "Paused", cls: "text-fg-3" },
   completed: { dot: "ok", label: "Complete", cls: "text-fg-2" },
   failed: { dot: "err", label: "Failed", cls: "text-err" },
   cancelled: { dot: "idle", label: "Cancelled", cls: "text-fg-3" },
 };
+
+/** Not running now, but not finished: the agent can carry on. */
+export const STOPPED = ["idle", "waiting", "paused"];
+
+export function statusOf(status: string) {
+  return STATUS[status] ?? { dot: "idle" as const, label: status, cls: "text-fg-3" };
+}
 
 /** [header, classes]; the same classes are applied to the cells so columns hide consistently. */
 const COLS: Array<[string, string]> = [
@@ -43,8 +45,18 @@ const COLS: Array<[string, string]> = [
   ["Status", "text-right"],
 ];
 
+/** A cache hit rate. Near 100% the tenth of a point matters too. */
 export function fmtHit(h: number | null): string {
-  return h == null ? "—" : `${(h * 100).toFixed(h >= 0.995 ? 1 : 0)}%`;
+  if (h == null) return "—";
+  return h >= 0.995 && h < 1 ? `${(h * 100).toFixed(1)}%` : fmtPct(h);
+}
+
+/** Ended for good: what success rates and runtimes count as finished. */
+export const ENDED = ["completed", "failed", "cancelled"];
+
+/** Latest first, as the hosts list them; the same instant falls back to id. */
+export function newestFirst(a: TrajectorySummary, b: TrajectorySummary): number {
+  return byTime(b.started_at, a.started_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 /** Below 50% the prompt is mostly being re-sent; treat as degraded. */
 export function hitCls(h: number | null): string {
@@ -55,17 +67,15 @@ export function hitCls(h: number | null): string {
 }
 
 function median(xs: number[]): number {
-  if (!xs.length) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
+  return percentile([...xs].sort((a, b) => a - b), 0.5);
 }
 
-function Overview({ rows }: { rows: TrajectorySummary[] }) {
-  const done = rows.filter((r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled");
+function Overview({ rows, latest }: { rows: TrajectorySummary[]; latest: boolean }) {
+  const done = rows.filter((r) => ENDED.includes(r.status));
   const ok = done.filter((r) => r.status === "completed").length;
   const cells: Array<[string, string, string?]> = [
-    ["Trajectories", fmtInt(rows.length), `${rows.filter((r) => r.status === "running").length} running · ${rows.filter((r) => r.status === "idle" || r.status === "waiting").length} idle`],
-    ["Success", done.length ? `${((ok / done.length) * 100).toFixed(1)}%` : "—", `${ok} / ${done.length}`],
+    [latest ? "Latest trajectories" : "Trajectories", fmtInt(rows.length), `${fmtInt(rows.filter((r) => r.status === "running").length)} running · ${fmtInt(rows.filter((r) => STOPPED.includes(r.status)).length)} idle`],
+    ["Success", done.length ? fmtPct(ok / done.length) : "—", `${fmtInt(ok)} / ${fmtInt(done.length)}`],
     ["Median runtime", done.length ? fmtDur(median(done.map((r) => r.duration_ms))) : "—", ""],
     ["Prompt → out", `${fmtTokens(rows.reduce((a, r) => a + promptTokens(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens), 0))} → ${fmtTokens(rows.reduce((a, r) => a + r.output_tokens, 0))}`, `${fmtTokens(rows.reduce((a, r) => a + r.input_tokens, 0))} in · uncached`],
     ["Cache hit", fmtHit(cacheHit(rows.reduce((a, r) => a + r.input_tokens, 0), rows.reduce((a, r) => a + r.cache_creation_tokens, 0), rows.reduce((a, r) => a + r.cache_read_tokens, 0))), `${fmtTokens(rows.reduce((a, r) => a + r.cache_read_tokens, 0))} read from cache`],
@@ -85,32 +95,48 @@ function Overview({ rows }: { rows: TrajectorySummary[] }) {
   );
 }
 
+/** How many trajectories to ask for, and the steps "Show more" takes. */
+const LIMITS = [100, 500, 2_000, 10_000];
+
 export function Trajectories() {
-  const st = useAsync((s) => trajectories(100, s), [], 5_000);
+  const host = useHost();
+  const [limit, setLimit] = useState(LIMITS[0]);
+  const st = useAsync((s) => trajectories(limit, s), [limit], 5_000);
   const [order, setOrder] = useState<Order>("newest");
   if (st.status === "loading") return <div className="label py-20 text-center">loading…</div>;
   if (st.status === "error") return <Empty title="Couldn't load trajectories" body={st.error} />;
-  const rows = [...st.data].sort((a, b) => (order === "newest" ? b.started_at.localeCompare(a.started_at) : a.started_at.localeCompare(b.started_at)));
+  const rows = [...st.data].sort((a, b) => (order === "newest" ? newestFirst(a, b) : newestFirst(b, a)));
+  // A full answer means there may be more: the hosts send the most recently active.
+  const latest = st.data.length >= limit;
+  const more = LIMITS.find((l) => l > limit);
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight text-fg">Trajectories</h1>
-          <p className="mt-0.5 text-[12.5px] text-fg-3">Every agent run this daemon has seen, {order} first.</p>
+          <p className="mt-0.5 text-[12.5px] text-fg-3">
+            {latest ? `The ${fmtInt(rows.length)} most recently active trajectories ${host.hosted ? "uploaded here" : "this daemon has seen"}` : host.hosted ? "Every trajectory uploaded here" : "Every trajectory this daemon has seen"}, {order} first.
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="mono hidden whitespace-nowrap text-[11px] text-fg-4 sm:block">updates every 5s</div>
           <SortToggle order={order} onChange={setOrder} />
         </div>
       </div>
-      <Overview rows={rows} />
+      <Overview rows={rows} latest={latest} />
       {rows.length === 0 ? (
         <Empty
           title="No trajectories yet"
           body={
-            <>
-              Connect an agent and run it once: <span className="mono text-fg-2">groundstation connect claude-code</span>. The trajectory appears here as soon as the first event arrives.
-            </>
+            host.hosted ? (
+              <>
+                Connect a computer: <span className="mono text-fg-2">groundstation cloud login --endpoint {location.origin}</span>. Its trajectories appear here as soon as the first events arrive.
+              </>
+            ) : (
+              <>
+                Connect an agent and run it once: <span className="mono text-fg-2">groundstation connect claude-code</span>. The trajectory appears here as soon as the first event arrives.
+              </>
+            )
           }
         />
       ) : (
@@ -127,7 +153,7 @@ export function Trajectories() {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const s = STATUS[r.status] ?? { dot: "idle" as const, label: r.status, cls: "text-fg-3" };
+                const s = statusOf(r.status);
                 return (
                   <tr key={r.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-bg-2" onClick={() => (location.hash = `#/t/${encodeURIComponent(r.id)}`)}>
                     <td className="w-full max-w-0 px-3 py-2.5 pl-4">
@@ -146,10 +172,10 @@ export function Trajectories() {
                     </td>
                     <td className={cx("mono whitespace-nowrap px-3 py-2.5 text-[12px] text-fg-3", COLS[3][1])}>{ago(r.started_at)}</td>
                     <td className={cx("mono px-3 py-2.5 text-right text-[12.5px]", r.status === "running" ? "text-model" : "text-fg")}>{fmtDur(r.duration_ms)}</td>
-                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[5][1])}>{r.user_turns}</td>
+                    <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[5][1])}>{fmtInt(r.user_turns)}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[6][1])}>
-                      {r.tool_calls}
-                      {r.tool_errors > 0 && <span className="ml-1 text-err">({r.tool_errors})</span>}
+                      {fmtInt(r.tool_calls)}
+                      {r.tool_errors > 0 && <span className="ml-1 text-err">({fmtInt(r.tool_errors)})</span>}
                     </td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg-2", COLS[7][1])} title="prompt + out">{fmtTokens(totalTokens(r))}</td>
                     <td className={cx("mono px-3 py-2.5 text-[12.5px] text-fg", COLS[8][1])} title="in + cache write + cache read">{fmtTokens(promptTokens(r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens))}</td>
@@ -166,6 +192,13 @@ export function Trajectories() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+      {latest && more && (
+        <div className="text-center">
+          <button type="button" onClick={() => setLimit(more)} className="rounded-md border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] text-fg-2 transition-colors hover:bg-bg-3 hover:text-fg">
+            Show up to {fmtInt(more)}
+          </button>
         </div>
       )}
     </div>
