@@ -14,9 +14,9 @@ axum = "0.8.9"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 flate2 = "1.1.10"
-groundstation-backend = { version = "0.1.2", path = "../backend" }
-groundstation-schema = { version = "0.1.2", path = "../schema" }
-groundstation-wire = { version = "0.1.2", path = "../wire" }
+groundstation-backend = { workspace = true }
+groundstation-schema = { workspace = true }
+groundstation-wire = { workspace = true }
 http-body-util = "0.1.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }

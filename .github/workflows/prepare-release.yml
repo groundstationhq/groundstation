@@ -58,6 +58,14 @@ jobs:
           set -eu
           sed -i "0,/^version = \"${{ steps.v.outputs.current }}\"/s//version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
           grep -m1 '^version' Cargo.toml
+          # The workspace's crates require each other by version, and those
+          # requirements are in the same file ([workspace.dependencies]): the
+          # lines with a path. A patch release would satisfy the old ones; a
+          # minor or major one doesn't.
+          sed -i -E "/path = \"/ s/version = \"[^\"]+\"/version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
+          if grep 'path = "' Cargo.toml | grep -v "version = \"${{ steps.v.outputs.next }}\""; then
+            echo "these workspace crates aren't on ${{ steps.v.outputs.next }}" >&2; exit 1
+          fi
           cargo update --workspace --offline 2>/dev/null || cargo update --workspace
           # The chart is released with the backend: it carries the same
           # version and installs that version's image.
