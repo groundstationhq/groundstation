@@ -5,7 +5,7 @@
 
 # Base images are pinned by digest, so a commit always builds the same image;
 # Dependabot proposes updates.
-FROM node:24.21.0-trixie-slim@sha256:8ec5d7557396cfe32d21c3f9c13072355ceab22b584578ca4bb28af31120cffe AS ui
+FROM node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS ui
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
