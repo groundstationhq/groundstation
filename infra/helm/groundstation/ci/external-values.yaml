@@ -1,0 +1,40 @@
+# Databases run elsewhere, sign-in with OpenID Connect only, behind an Ingress.
+publicUrl: https://app.groundstation.sh
+# Uploads on a host name of their own.
+ingestUrl: https://ingest.groundstation.sh
+# The published image, pinned to what the 0.0.1-alpha.1 tag was when this was written.
+image:
+  digest: sha256:250eb5a445356cdfe097a8919d3bbc0efc3121045925024cd62bea1dd9086a38
+signIn:
+  adminPassword:
+    enabled: false
+  oidc:
+    issuer: https://accounts.example.com
+    clientId: groundstation
+    clientSecret: example
+    allowedDomains: [example.com, example.org]
+secrets:
+  existingSecret: groundstation-secrets
+clickhouse:
+  enabled: false
+externalClickhouse:
+  url: https://clickhouse.example.com:8443
+postgres:
+  enabled: false
+externalPostgres:
+  host: postgres.example.com
+  params: sslmode=require
+  separateRoles: false
+ingress:
+  enabled: true
+  className: nginx
+  host: app.groundstation.sh
+  tlsSecretName: app-groundstation-sh-tls
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 8m
+  ingest:
+    host: ingest.groundstation.sh
+    tlsSecretName: ingest-groundstation-sh-tls
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: 8m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "60"

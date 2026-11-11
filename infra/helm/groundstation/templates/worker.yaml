@@ -1,0 +1,54 @@
+{{- $component := dict "root" . "component" "worker" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "groundstation.fullname" . }}-worker
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      annotations:
+        checksum/secrets: {{ include "groundstation.secretChecksum" . }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      # The api creates the tables and grants this service its privileges; a
+      # pass before that fails, and the next is `intervalSeconds` away.
+      initContainers:
+        {{- include "groundstation.wait" (dict "root" . "name" "wait-for-api" "addresses" (list (include "groundstation.api.address" .)) "seconds" 120) | nindent 8 }}
+      containers:
+        # No port and no probes: the worker serves nothing, and its log says
+        # when a pass fails.
+        - name: worker
+          image: {{ include "groundstation.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["groundstation-worker"]
+          env:
+            {{- include "groundstation.env.clickhouse" (dict "root" . "service" "worker") | nindent 12 }}
+            {{- include "groundstation.env.postgres" (dict "root" . "role" "worker") | nindent 12 }}
+            - name: GROUNDSTATION_WORKER_INTERVAL
+              value: {{ .Values.worker.intervalSeconds | quote }}
+            - name: GROUNDSTATION_WORKER_WINDOW_DAYS
+              value: {{ .Values.worker.windowDays | quote }}
+            {{- with .Values.logLevel }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- include "groundstation.restricted" . | nindent 12 }}
+          {{- with .Values.worker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

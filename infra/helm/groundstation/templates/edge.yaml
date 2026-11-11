@@ -1,0 +1,117 @@
+{{- $component := dict "root" . "component" "edge" }}
+{{- $name := printf "%s-edge" (include "groundstation.fullname" .) }}
+{{- $caddyfile := .Files.Get "files/Caddyfile" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+data:
+  # docker/caddy/Caddyfile, the same routing and limits as with Docker.
+  Caddyfile: |
+    {{- required "files/Caddyfile is missing: the chart links to docker/caddy/Caddyfile in the repository" $caddyfile | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+  {{- with .Values.edge.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.edge.service.type }}
+  selector:
+    {{- include "groundstation.selectorLabels" $component | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.edge.service.port }}
+      targetPort: http
+      {{- if and (eq .Values.edge.service.type "NodePort") .Values.edge.service.nodePort }}
+      nodePort: {{ .Values.edge.service.nodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  replicas: {{ .Values.edge.replicas }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      annotations:
+        checksum/caddyfile: {{ $caddyfile | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      containers:
+        - name: edge
+          image: {{ printf "%s:%s" .Values.edge.image.repository .Values.edge.image.tag | quote }}
+          imagePullPolicy: {{ .Values.edge.image.pullPolicy }}
+          env:
+            - name: INGEST_UPSTREAM
+              value: {{ include "groundstation.ingest.address" . | quote }}
+            - name: API_UPSTREAM
+              value: {{ include "groundstation.api.address" . | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # A connection, not a request: the edge answers 404 for /healthz on
+          # purpose, and any other path would depend on the api.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          # As restricted as the rest, except that the image's caddy binary
+          # carries the capability to bind low ports, and the kernel refuses
+          # to run it where that capability can't exist at all. The edge
+          # listens on 8080 and never uses it.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: caddyfile
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+              readOnly: true
+            # Caddy keeps its state in these two, and the rest is read-only.
+            - name: state
+              mountPath: /data
+              subPath: data
+            - name: state
+              mountPath: /config
+              subPath: config
+          {{- with .Values.edge.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: caddyfile
+          configMap:
+            name: {{ $name }}
+        - name: state
+          emptyDir: {}

@@ -198,6 +198,10 @@ Deleting a tenant in Postgres (`DELETE FROM tenants WHERE id = '<tenant>'`) remo
 
 Upgrading is a new image: the api migrates on start. Nothing calls home.
 
+### On Kubernetes
+
+[`infra/helm/groundstation`](../infra/helm/groundstation) is a Helm chart for the same stack: the three services, the edge with the same Caddyfile, and ClickHouse and Postgres set up by the same scripts, or your own databases in their place. It generates the passwords and keeps them, gives each service only its own, and is exposed through the edge's Service or an Ingress. Its `README.md` says how to install it.
+
 ## Tests
 
 The unit tests run with `cargo test`. Tests that need the databases are `#[ignore]`d there and run with `make deps && make backend-test`, as CI does. Among them, `crates/api/tests/parity.rs` loads the same events into `gsd`'s store and into ClickHouse and checks that summaries, timelines, lists and tool stats come out identical.

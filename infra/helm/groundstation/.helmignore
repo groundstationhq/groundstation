@@ -1,0 +1,7 @@
+.DS_Store
+.git/
+*.swp
+*.bak
+*.tmp
+# Values for testing the chart, not for installing it.
+ci/

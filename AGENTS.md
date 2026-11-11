@@ -45,4 +45,5 @@ Every change is a branch and a pull request into `main`, squash-merged once CI i
 | `ui/` | the viewer; Vite + React + TypeScript |
 | `docs/gsd.md` | daemon and CLI internals; user docs live in the `landing_page` repo under `docs/` |
 | `docs/backend.md` | the backend: running it locally, configuration, self-hosting |
+| `infra/helm/groundstation` | Helm chart for the backend on Kubernetes; its `files/` link to the Caddyfile and database scripts under `docker/` |
 | `product.md` | the product brief and roadmap (kept locally, not in git) |

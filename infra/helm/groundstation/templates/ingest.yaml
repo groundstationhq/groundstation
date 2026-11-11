@@ -1,0 +1,88 @@
+{{- $component := dict "root" . "component" "ingest" }}
+{{- $name := printf "%s-ingest" (include "groundstation.fullname" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+  {{- with .Values.ingest.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.ingest.service.type }}
+  selector:
+    {{- include "groundstation.selectorLabels" $component | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.ingest.service.port }}
+      targetPort: http
+      {{- if and (eq .Values.ingest.service.type "NodePort") .Values.ingest.service.nodePort }}
+      nodePort: {{ .Values.ingest.service.nodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  replicas: {{ .Values.ingest.replicas }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      annotations:
+        checksum/secrets: {{ include "groundstation.secretChecksum" . }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      # Longer than the 25 s ingest takes to finish what's in flight.
+      terminationGracePeriodSeconds: 30
+      # The api creates the tables and grants this service its privileges.
+      # Ingest then runs without it: uploads go on while the api is down.
+      initContainers:
+        {{- include "groundstation.wait" (dict "root" . "name" "wait-for-api" "addresses" (list (include "groundstation.api.address" .)) "seconds" 120) | nindent 8 }}
+      containers:
+        - name: ingest
+          image: {{ include "groundstation.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["groundstation-ingest"]
+          env:
+            - name: GROUNDSTATION_INGEST_LISTEN
+              value: 0.0.0.0:4320
+            {{- include "groundstation.env.clickhouse" (dict "root" . "service" "ingest") | nindent 12 }}
+            {{- include "groundstation.env.postgres" (dict "root" . "role" "ingest") | nindent 12 }}
+            {{- with .Values.logLevel }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ingest.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 4320
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          securityContext:
+            {{- include "groundstation.restricted" . | nindent 12 }}
+          {{- with .Values.ingest.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
