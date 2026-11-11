@@ -1,10 +1,10 @@
 name: Prepare release
 
-# Run this from the Actions tab. It bumps the workspace version and the Helm
-# chart's, regenerates CHANGELOG.md, commits "Release vX.Y.Z", tags it, and
-# dispatches the Release workflow, which builds the binaries and the backend's
-# image and publishes the GitHub Release with that version's changelog section
-# as the notes.
+# Run this from the Actions tab. It bumps the workspace version, the version
+# the crates require of each other and the Helm chart's, regenerates
+# CHANGELOG.md, commits "Release vX.Y.Z", tags it, and dispatches the Release
+# workflow, which builds the binaries and the backend's image and publishes the
+# GitHub Release with that version's changelog section as the notes.
 
 on:
   workflow_dispatch:
@@ -58,6 +58,13 @@ jobs:
           set -eu
           sed -i "0,/^version = \"${{ steps.v.outputs.current }}\"/s//version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
           grep -m1 '^version' Cargo.toml
+          # The crates name each other with a version beside the path. Move
+          # those too: a requirement left at 0.1 isn't met by 0.2, and cargo
+          # then refuses to resolve the workspace.
+          sed -i -E "s/^((groundstation[a-z-]*|gsd) = \{ version = \")[^\"]+(\", path = )/\1${{ steps.v.outputs.next }}\3/" crates/*/Cargo.toml adapters/*/Cargo.toml
+          if grep -nE '^(groundstation[a-z-]*|gsd) = \{ version = "' crates/*/Cargo.toml adapters/*/Cargo.toml | grep -v "\"${{ steps.v.outputs.next }}\""; then
+            echo "a crate still requires another at an old version" >&2; exit 1
+          fi
           cargo update --workspace --offline 2>/dev/null || cargo update --workspace
           # The chart is released with the backend: it carries the same
           # version and installs that version's image.
@@ -74,7 +81,7 @@ jobs:
           set -eu
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md infra/helm/groundstation/Chart.yaml
+          git add Cargo.toml Cargo.lock CHANGELOG.md infra/helm/groundstation/Chart.yaml crates/*/Cargo.toml adapters/*/Cargo.toml
           git commit -m "Release v${{ steps.v.outputs.next }}"
           git tag -a "v${{ steps.v.outputs.next }}" -m "v${{ steps.v.outputs.next }}"
           git push origin HEAD:main "v${{ steps.v.outputs.next }}"
