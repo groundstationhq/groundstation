@@ -1,7 +1,9 @@
 name: Release
 
 # Builds both binaries for every supported target and publishes a GitHub Release
-# with checksums and the changelog section for that version as the notes.
+# with checksums and the changelog section for that version as the notes. Also
+# builds the backend's image and pushes it to the GitHub Container Registry as
+# `X.Y.Z`, and as `latest` when that is the newest release.
 # Normally started by the "Prepare release" workflow; pushing a `vX.Y.Z` tag by
 # hand works too (the tag must match the workspace version).
 # install.sh resolves "latest" through the VERSION asset, so no API calls are needed.
@@ -91,6 +93,85 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ steps.pkg.outputs.asset }}
           if-no-files-found: error
+
+  # The backend's image (ingest, api and worker in one), for both architectures.
+  # Each is built on a runner of its own kind: emulating one takes many times
+  # longer. They are pushed as `X.Y.Z-amd64` and `X.Y.Z-arm64`, which the next
+  # job joins under `X.Y.Z`.
+  image:
+    name: image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/groundstation-server
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Version
+        id: v
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          ws=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$version" != "$ws" ]; then echo "tag $tag does not match workspace version $ws" >&2; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Sign in to the registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Build and push
+        run: |
+          set -eu
+          version="${{ steps.v.outputs.version }}"
+          # The source label is what ties the package to this repository.
+          docker build \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.version=$version" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            --label "org.opencontainers.image.description=Ground Station backend: ingest, api and worker" \
+            --tag "$IMAGE:$version-${{ matrix.arch }}" .
+          docker push "$IMAGE:$version-${{ matrix.arch }}"
+
+  # One name for both architectures: `docker pull` and Kubernetes pick theirs.
+  image-manifest:
+    name: image
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/groundstation-server
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Sign in to the registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Join the architectures
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          names="--tag $IMAGE:$version"
+          # `latest` follows the newest release, never a pre-release, and
+          # stays where it is when an older tag is built again.
+          newest=$(git tag --list 'v*' | grep -v -e '-' | sort -V | tail -n 1)
+          if [ "$tag" = "$newest" ]; then names="$names --tag $IMAGE:latest"; fi
+          docker buildx imagetools create $names "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
+          docker buildx imagetools inspect "$IMAGE:$version"
 
   publish:
     needs: build

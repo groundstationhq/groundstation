@@ -2,9 +2,9 @@
 publicUrl: https://app.groundstation.sh
 # Uploads on a host name of their own.
 ingestUrl: https://ingest.groundstation.sh
-# The published image, pinned to what the 0.0.1-alpha.1 tag was when this was written.
+# The published image, pinned to what the 0.0.1-alpha.2 tag was when this was written.
 image:
-  digest: sha256:250eb5a445356cdfe097a8919d3bbc0efc3121045925024cd62bea1dd9086a38
+  digest: sha256:9da75c292ca2a49c0a8821ec412f098afeb53b722402f6091b2bd13195fde353
 signIn:
   adminPassword:
     enabled: false
