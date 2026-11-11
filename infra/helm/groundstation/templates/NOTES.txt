@@ -1,0 +1,52 @@
+{{- $name := include "groundstation.fullname" . }}
+Ground Station is starting in namespace {{ .Release.Namespace }}. The databases come up first, then the api migrates them:
+
+  kubectl --namespace {{ .Release.Namespace }} get pods --watch
+
+It is set up to be reached at {{ .Values.publicUrl }}, and sign-in is refused at any other address.
+{{- if .Values.ingress.enabled }}
+
+The Ingress for {{ .Values.ingress.host }} leads there.
+{{- else if eq .Values.edge.service.type "ClusterIP" }}
+
+The edge has no address outside the cluster yet. Forward it:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ $name }}-edge 8080:{{ .Values.edge.service.port }}
+
+That serves http://127.0.0.1:8080.
+{{- else }}
+
+The edge's Service ({{ .Values.edge.service.type }}) has the address:
+
+  kubectl --namespace {{ .Release.Namespace }} get svc {{ $name }}-edge
+{{- end }}
+{{- if .Values.signIn.adminPassword.enabled }}
+
+Sign in with the admin password:
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "groundstation.secretName" . }} -o jsonpath='{.data.admin-password}' | base64 -d; echo
+{{- end }}
+
+{{- $local := or (hasPrefix "http://127.0.0.1" .Values.publicUrl) (hasPrefix "http://localhost" .Values.publicUrl) }}
+{{- if or $local (hasPrefix "https://" .Values.publicUrl) }}
+
+Then send a computer's events here:
+
+  groundstation cloud login --endpoint {{ .Values.publicUrl }}
+{{- with .Values.ingestUrl }}
+
+It uploads to {{ . }}, which the api tells it. That address must reach ingest: `ingress.ingest`, or `ingest.service` with something in front of it.
+{{- end }}
+{{- else }}
+
+gsd uploads only over https, or to localhost, and {{ .Values.publicUrl }} is neither: the UI works there, uploads need https in front. To upload from one computer meanwhile, create a token on the Tokens page, forward the edge and paste the token:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ $name }}-edge 8080:{{ .Values.edge.service.port }}
+  groundstation cloud login --endpoint http://127.0.0.1:8080 --token-stdin
+{{- end }}
+
+Check the release with `helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}`.
+{{- if not .Values.secrets.existingSecret }}
+
+The Secret {{ $name }} and the databases' volumes stay when the release is uninstalled, so a reinstall keeps its data. README.md says how to delete them.
+{{- end }}

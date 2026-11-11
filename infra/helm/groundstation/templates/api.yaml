@@ -1,0 +1,140 @@
+{{- $component := dict "root" . "component" "api" }}
+{{- $name := printf "%s-api" (include "groundstation.fullname" .) }}
+{{- $signIn := .Values.signIn }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  selector:
+    {{- include "groundstation.selectorLabels" $component | nindent 4 }}
+  ports:
+    - name: http
+      port: 4321
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      annotations:
+        checksum/secrets: {{ include "groundstation.secretChecksum" . }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      # Longer than the 25 s the api takes to finish what's in flight.
+      terminationGracePeriodSeconds: 30
+      {{- $databases := list }}
+      {{- if .Values.clickhouse.enabled }}
+      {{- $databases = append $databases (printf "%s-clickhouse:8123" (include "groundstation.fullname" .)) }}
+      {{- end }}
+      {{- if .Values.postgres.enabled }}
+      {{- $databases = append $databases (printf "%s-postgres:5432" (include "groundstation.fullname" .)) }}
+      {{- end }}
+      {{- if $databases }}
+      # The api migrates when it starts, and stops if it can't.
+      initContainers:
+        {{- include "groundstation.wait" (dict "root" . "name" "wait-for-databases" "addresses" $databases "seconds" 300) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "groundstation.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["groundstation-api"]
+          env:
+            - name: GROUNDSTATION_API_LISTEN
+              value: 0.0.0.0:4321
+            - name: GROUNDSTATION_PUBLIC_URL
+              value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
+            {{- with .Values.ingestUrl }}
+            # What it tells `groundstation cloud login` to upload to.
+            - name: GROUNDSTATION_INGEST_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- include "groundstation.env.clickhouse" (dict "root" . "service" "api") | nindent 12 }}
+            # The admin: the api migrates ClickHouse when it starts.
+            - name: GROUNDSTATION_CLICKHOUSE_ADMIN_USER
+              value: {{ include "groundstation.clickhouse.adminUser" . | quote }}
+            - name: GROUNDSTATION_CLICKHOUSE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "groundstation.secretName" . }}
+                  key: clickhouse-admin-password
+            {{- include "groundstation.env.postgres" (dict "root" . "role" "owner") | nindent 12 }}
+            {{- if $signIn.adminPassword.enabled }}
+            - name: GROUNDSTATION_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "groundstation.secretName" . }}
+                  key: admin-password
+            {{- end }}
+            {{- if $signIn.oidc.issuer }}
+            - name: GROUNDSTATION_OIDC_ISSUER
+              value: {{ $signIn.oidc.issuer | quote }}
+            - name: GROUNDSTATION_OIDC_CLIENT_ID
+              value: {{ $signIn.oidc.clientId | quote }}
+            - name: GROUNDSTATION_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "groundstation.secretName" . }}
+                  key: oidc-client-secret
+            - name: GROUNDSTATION_OIDC_NAME
+              value: {{ $signIn.oidc.name | quote }}
+            - name: GROUNDSTATION_OIDC_ALLOWED_DOMAINS
+              value: {{ join "," $signIn.oidc.allowedDomains | quote }}
+            {{- end }}
+            - name: GROUNDSTATION_NEW_USERS
+              value: {{ $signIn.newUsers | quote }}
+            - name: GROUNDSTATION_RETENTION_DAYS
+              value: {{ .Values.retentionDays | quote }}
+            - name: GROUNDSTATION_SESSION_DAYS
+              value: {{ .Values.sessionDays | quote }}
+            {{- with .Values.logLevel }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 4321
+          # Listening starts once both databases are migrated.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          # Whether both databases answer: without them the api takes no traffic,
+          # and restarting it wouldn't bring them back.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          securityContext:
+            {{- include "groundstation.restricted" . | nindent 12 }}
+          {{- with .Values.api.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

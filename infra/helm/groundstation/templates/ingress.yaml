@@ -1,0 +1,75 @@
+{{- if .Values.ingress.enabled }}
+{{- $component := dict "root" . "component" "edge" }}
+{{- $host := required "ingress.host is required when ingress.enabled is true: the host name of publicUrl" .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "groundstation.fullname" . }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ . | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # Everything goes to the edge, which sends uploads to ingest and the
+          # rest to the api.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "groundstation.fullname" . }}-edge
+                port:
+                  name: http
+{{- with .Values.ingress.ingest }}
+{{- if .host }}
+{{- if not $.Values.ingestUrl }}
+{{- fail "ingress.ingest.host needs ingestUrl: the api tells gsd to upload there, e.g. https://<ingress.ingest.host>" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "groundstation.fullname" $ }}-ingest
+  labels:
+    {{- include "groundstation.labels" (dict "root" $ "component" "ingest") | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $.Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if .tlsSecretName }}
+  tls:
+    - hosts: [{{ .host | quote }}]
+      secretName: {{ .tlsSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          # Uploads and nothing else: ingest's own health check stays inside.
+          - path: /v1/events
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "groundstation.fullname" $ }}-ingest
+                port:
+                  name: http
+{{- end }}
+{{- end }}
+{{- end }}

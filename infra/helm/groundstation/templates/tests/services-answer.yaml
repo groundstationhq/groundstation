@@ -1,0 +1,36 @@
+{{- $name := include "groundstation.fullname" . }}
+# `helm test <release>`: the services answer, and the edge routes to them.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}-test
+  labels:
+    {{- include "groundstation.labels" (dict "root" . "component" "test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  {{- include "groundstation.podDefaults" . | nindent 2 }}
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: {{ printf "%s:%s" .Values.waitImage.repository .Values.waitImage.tag | quote }}
+      imagePullPolicy: {{ .Values.waitImage.pullPolicy }}
+      command:
+        - sh
+        - -ec
+        - |
+          # Each says whether its databases answer.
+          wget -q -O - http://{{ include "groundstation.api.address" . }}/healthz; echo
+          wget -q -O - http://{{ include "groundstation.ingest.address" . }}/healthz; echo
+          edge=http://{{ $name }}-edge:{{ .Values.edge.service.port }}
+          # The api, through the edge: the sign-in page.
+          wget -q -O /dev/null "$edge/auth/login"
+          # Ingest, through the edge: an upload without a token is refused by
+          # ingest (401), not by the api (403, cross-origin).
+          wget -S -q -O /dev/null --post-data '{}' "$edge/v1/events" 2>&1 | grep -q ' 401 '
+          # The services' own health checks are not for the outside.
+          wget -S -q -O /dev/null "$edge/healthz" 2>&1 | grep -q ' 404 '
+          echo "the edge routes to api and ingest"
+      securityContext:
+        {{- include "groundstation.restricted" . | nindent 8 }}

@@ -1,0 +1,231 @@
+# Ground Station's backend. docs/backend.md in the repository describes the
+# services and every setting they take; README.md here describes the chart.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The origin people and gsd use: scheme, host and optional port, nothing after
+# it. Sign-in redirects, cookies and same-origin checks are based on it, so it
+# must be exactly what the browser's address bar shows. The default matches
+# `kubectl port-forward svc/<release>-edge 8080:80`.
+publicUrl: http://127.0.0.1:8080
+
+# Where gsd uploads, when uploads have an origin of their own: scheme, host
+# and optional port, like publicUrl. Empty means they go to publicUrl, and the
+# edge passes them to ingest.
+#
+# Set it to keep the two apart: uploads then reach ingest without passing
+# through the edge or the api, so each can be scaled, limited and taken down
+# without the other. People still give `groundstation cloud login` the
+# publicUrl; the api tells it this address. Expose ingest at it yourself, with
+# `ingress.ingest` or `ingest.service` below. gsd uploads only over https, or
+# to localhost.
+ingestUrl: ""
+
+# The backend's image: ingest, api and worker are one image, built from the
+# Dockerfile at the root of the repository. The published one is public, for
+# amd64 and arm64; set `repository` to run one you built.
+image:
+  repository: ghcr.io/groundstationhq/groundstation-server
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Set to pin by digest (sha256:...); the tag is then ignored.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# How people sign in. At least one of the two must be on.
+signIn:
+  # Sign in as the admin user with a password: enough for a single person or
+  # a first look. At least 12 characters; generated when left empty (the
+  # notes after install say how to read it).
+  adminPassword:
+    enabled: true
+    value: ""
+  # OpenID Connect. Set issuer and clientId together.
+  oidc:
+    issuer: ""
+    clientId: ""
+    clientSecret: ""
+    # What the sign-in button calls the provider.
+    name: single sign-on
+    # Only people whose verified email is at one of these domains may sign in.
+    # Leave empty only if the provider admits just your organization.
+    allowedDomains: []
+  # Where a person signing in for the first time works: `shared` puts
+  # everyone in one tenant, `personal` gives each their own.
+  newUsers: shared
+
+# How long new tenants keep events. A tenant keeps the value it was created with.
+retentionDays: 90
+# How long a browser session lasts (1 to 400).
+sessionDays: 30
+# RUST_LOG for the three services, e.g. `info` or `groundstation_api=debug`.
+# Empty leaves each service's own filter.
+logLevel: ""
+
+# Passwords. Each one left empty is generated at the first install and then
+# kept: across upgrades, and across an uninstall, so a reinstall still opens
+# the databases it left behind. Letters and digits only: the Postgres ones go
+# into a connection URL.
+#
+# The databases take their passwords when their volumes are first created;
+# changing a value later doesn't change it in the database (docs/backend.md
+# says how to change one).
+secrets:
+  # Use a Secret you manage instead of the generated one. It needs every key
+  # README.md lists. With tools that render charts without reading the cluster
+  # (Argo CD, `helm template`), nothing can be kept, so use this.
+  existingSecret: ""
+  clickhouse:
+    admin: ""
+    ingest: ""
+    api: ""
+    worker: ""
+  postgres:
+    owner: ""
+    ingest: ""
+    worker: ""
+
+# --- the services ------------------------------------------------------------
+
+# Serves the UI, /v1 reads and sign-in, and migrates both databases when it starts.
+api:
+  replicas: 1
+  resources: {}
+  # Extra environment variables, as a container's `env` list.
+  extraEnv: []
+
+# Takes uploads from gsd on POST /v1/events.
+ingest:
+  replicas: 1
+  resources: {}
+  extraEnv: []
+  # ClusterIP is enough behind the edge or an Ingress. LoadBalancer or
+  # NodePort gives ingest an address of its own (see ingestUrl) without an
+  # Ingress; something in front must then terminate TLS.
+  service:
+    type: ClusterIP
+    port: 4320
+    nodePort: null
+    annotations: {}
+
+# Runs the detectors over each tenant's recent events.
+worker:
+  replicas: 1
+  # Seconds between passes, and how many days of events a pass looks at.
+  intervalSeconds: 300
+  windowDays: 7
+  resources: {}
+  extraEnv: []
+
+# One origin for everything: POST /v1/events goes to ingest, the rest to api.
+# Its Service is what you expose.
+edge:
+  replicas: 1
+  image:
+    repository: caddy
+    tag: 2.11.4
+    pullPolicy: IfNotPresent
+  resources: {}
+  service:
+    # ClusterIP behind an Ingress or a port-forward; LoadBalancer or NodePort
+    # to expose the edge itself.
+    type: ClusterIP
+    port: 80
+    # Only for type NodePort; empty lets Kubernetes pick.
+    nodePort: null
+    # For asking the load balancer for an address, e.g.
+    #   lbipam.cilium.io/ips: 192.168.1.50
+    #   metallb.io/loadBalancerIPs: 192.168.1.50
+    annotations: {}
+
+# An Ingress in front of the edge, for TLS and a host name. The controller
+# must pass Origin and Cookie through unchanged, take request bodies of at
+# least 8 MiB on POST /v1/events and wait at least 60 seconds for one. For
+# ingress-nginx:
+#   nginx.ingress.kubernetes.io/proxy-body-size: 8m
+#   nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # The host name of publicUrl.
+  host: ""
+  # The name of a TLS Secret for the host; empty for none, or for a
+  # controller that brings its own certificate.
+  tlsSecretName: ""
+  # A second Ingress, for uploads on a host name of their own: the host of
+  # ingestUrl. It routes POST /v1/events straight to ingest and nothing else,
+  # with its own annotations, so its limits can differ from the web's.
+  ingest:
+    host: ""
+    annotations: {}
+    tlsSecretName: ""
+
+# --- the databases -----------------------------------------------------------
+
+# ClickHouse holds the events. Set `enabled: false` to use one you run
+# elsewhere (externalClickhouse below).
+clickhouse:
+  enabled: true
+  image:
+    repository: clickhouse/clickhouse-server
+    tag: 26.9.7.9
+    pullPolicy: IfNotPresent
+  resources: {}
+  persistence:
+    size: 20Gi
+    # Empty uses the cluster's default storage class.
+    storageClass: ""
+
+# A ClickHouse outside this release (ClickHouse Cloud, another cluster). It
+# needs the users and roles docker/clickhouse/users.sh creates: gs_ingest,
+# gs_api and gs_worker, with the passwords under `secrets.clickhouse`. The api
+# migrates it as `adminUser`.
+externalClickhouse:
+  # e.g. https://abc123.eu-central-1.aws.clickhouse.cloud:8443
+  url: ""
+  database: groundstation
+  adminUser: default
+
+# Postgres holds tenants, users, tokens and findings. Set `enabled: false` to
+# use one you run elsewhere (externalPostgres below).
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "18.6"
+    pullPolicy: IfNotPresent
+  resources: {}
+  persistence:
+    size: 5Gi
+    storageClass: ""
+
+# A Postgres outside this release (RDS, Cloud SQL). The api connects as
+# `username`, which must own `database`, with `secrets.postgres.owner`.
+externalPostgres:
+  host: ""
+  port: 5432
+  database: groundstation
+  username: groundstation
+  # Added to every connection URL, e.g. sslmode=require
+  params: ""
+  # Ingest and the worker connect as their own roles, gs_ingest and gs_worker,
+  # which you create first (docker/postgres/roles.sh). `false` has them
+  # connect as `username` too: simpler, but each then holds the owner's password.
+  separateRoles: true
+
+# --- applies to every pod ------------------------------------------------------
+
+# The small image the init containers use to wait for what a service needs.
+waitImage:
+  repository: busybox
+  tag: 1.37.0
+  pullPolicy: IfNotPresent
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

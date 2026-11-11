@@ -1,0 +1,2 @@
+# The defaults: nothing set. For `helm lint` and `helm template`.
+{}

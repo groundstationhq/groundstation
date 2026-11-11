@@ -1,0 +1,16 @@
+apiVersion: v2
+name: groundstation
+description: "Ground Station's backend on Kubernetes: ingest, api (with the UI), worker, the edge in front of them, and optionally ClickHouse and Postgres."
+type: application
+# The chart's own version; raise it with any change to the chart.
+version: 0.1.0
+# The image tag this chart was written for, and installs by default.
+appVersion: "0.0.1-alpha.1"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/groundstationhq/groundstation
+sources:
+  - https://github.com/groundstationhq/groundstation
+keywords:
+  - groundstation
+  - observability
+  - agents

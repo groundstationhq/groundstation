@@ -172,6 +172,7 @@ groundstation/
 │   ├── opencode/               OpenCode v2+: generated event-forwarding plugin + normalization
 │   └── pi/                     pi (pi.dev): generated event-forwarding extension + normalization
 ├── ui/                         trajectory viewer (Vite + React + TypeScript), see ui/README.md
+├── infra/helm/groundstation/   Helm chart for the backend on Kubernetes
 ├── assets/                     logo, banner, screenshots
 ├── STYLEGUIDE.md               visual language, telemetry conventions, copy voice, code rules
 └── README.md

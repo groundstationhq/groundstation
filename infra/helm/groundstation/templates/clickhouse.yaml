@@ -1,0 +1,160 @@
+{{- if .Values.clickhouse.enabled }}
+{{- $component := dict "root" . "component" "clickhouse" }}
+{{- $name := printf "%s-clickhouse" (include "groundstation.fullname" .) }}
+{{- $secret := include "groundstation.secretName" . }}
+{{- $users := .Files.Get "files/clickhouse-users.sh" }}
+{{- $logs := .Files.Get "files/clickhouse-logs.xml" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+data:
+  # docker/clickhouse/users.sh: one user per service. Runs once, when the
+  # volume is new.
+  users.sh: |
+    {{- required "files/clickhouse-users.sh is missing: the chart links to docker/clickhouse/users.sh in the repository" $users | nindent 4 }}
+  # docker/clickhouse/logs.xml: keeps ClickHouse's own logs from growing forever.
+  logs.xml: |
+    {{- required "files/clickhouse-logs.xml is missing: the chart links to docker/clickhouse/logs.xml in the repository" $logs | nindent 4 }}
+---
+# Headless: one pod, addressed by name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "groundstation.selectorLabels" $component | nindent 4 }}
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    # For clickhouse-client.
+    - name: native
+      port: 9000
+      targetPort: native
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  # One server. More is a cluster, which this chart doesn't set up.
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      annotations:
+        checksum/config: {{ $logs | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      terminationGracePeriodSeconds: 60
+      # The image's own user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clickhouse
+          image: {{ printf "%s:%s" .Values.clickhouse.image.repository .Values.clickhouse.image.tag | quote }}
+          imagePullPolicy: {{ .Values.clickhouse.image.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_DB
+              value: groundstation
+            # The admin, which the api migrates as.
+            - name: CLICKHOUSE_USER
+              value: groundstation
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: clickhouse-admin-password }
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+            # For users.sh.
+            - name: GS_INGEST_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: clickhouse-ingest-password }
+            - name: GS_API_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: clickhouse-api-password }
+            - name: GS_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: clickhouse-worker-password }
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          # Over the network, as the services connect: the server the image
+          # runs while it creates the users answers only inside the container.
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d/users.sh
+              subPath: users.sh
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/logs.xml
+              subPath: logs.xml
+              readOnly: true
+          {{- with .Values.clickhouse.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.clickhouse.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.persistence.size }}
+{{- end }}

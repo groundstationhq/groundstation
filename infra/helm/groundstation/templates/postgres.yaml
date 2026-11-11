@@ -1,0 +1,139 @@
+{{- if .Values.postgres.enabled }}
+{{- $component := dict "root" . "component" "postgres" }}
+{{- $name := printf "%s-postgres" (include "groundstation.fullname" .) }}
+{{- $secret := include "groundstation.secretName" . }}
+{{- $roles := .Files.Get "files/postgres-roles.sh" }}
+{{- $ready := list "pg_isready" "--host" "127.0.0.1" "--username" "groundstation" "--dbname" "groundstation" | toJson }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+data:
+  # docker/postgres/roles.sh: a role each for ingest and the worker. Runs
+  # once, when the volume is new.
+  roles.sh: |
+    {{- required "files/postgres-roles.sh is missing: the chart links to docker/postgres/roles.sh in the repository" $roles | nindent 4 }}
+---
+# Headless: one pod, addressed by name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "groundstation.selectorLabels" $component | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "groundstation.labels" $component | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "groundstation.selectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "groundstation.labels" $component | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "groundstation.podDefaults" . | nindent 6 }}
+      terminationGracePeriodSeconds: 60
+      # The image's own user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ printf "%s:%s" .Values.postgres.image.repository .Values.postgres.image.tag | quote }}
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: groundstation
+            # The owner, which the api connects as.
+            - name: POSTGRES_USER
+              value: groundstation
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: postgres-owner-password }
+            # For roles.sh.
+            - name: GS_INGEST_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: postgres-ingest-password }
+            - name: GS_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: postgres-worker-password }
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # Over TCP: the server the image runs while it creates the roles
+          # listens only on a socket.
+          startupProbe:
+            exec:
+              command: {{ $ready }}
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 150
+          readinessProbe:
+            exec:
+              command: {{ $ready }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: {{ $ready }}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # Postgres 18 images keep data in a versioned directory under this path.
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d/roles.sh
+              subPath: roles.sh
+              readOnly: true
+          {{- with .Values.postgres.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.postgres.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+{{- end }}
