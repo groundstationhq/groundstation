@@ -11,6 +11,11 @@
 //! Someone else on the same computer who sees the approval URL (in `ps`, say)
 //! could approve it for their own workspace. So with the token the CLI gets
 //! the workspace's name and who approved, and shows them before it saves.
+//!
+//! Before any of that the CLI asks where uploads go (`GET
+//! /auth/cli/endpoints`): people give it the address they sign in at, and
+//! ingest may have one of its own. It needs the answer first, to say where
+//! events will go before anyone agrees to send them.
 
 use axum::extract::rejection::{FormRejection, QueryRejection};
 use axum::extract::{Query, State};
@@ -19,6 +24,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use groundstation_backend::pg::tenants;
+use groundstation_wire::{ENDPOINTS_PATH, Endpoints};
 use serde::{Deserialize, Serialize};
 
 use super::pages::{self, encode, escape};
@@ -40,6 +46,15 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/auth/cli", get(page).post(approve))
         .route(TOKEN_PATH, post(collect))
+        .route(ENDPOINTS_PATH, get(endpoints))
+}
+
+/// Where a computer connecting here uploads. No sign-in: it's the address
+/// this backend is set up with, the same for everyone who asks.
+async fn endpoints(State(s): State<AppState>) -> Json<Endpoints> {
+    Json(Endpoints {
+        upload: s.config.upload_origin().to_string(),
+    })
 }
 
 #[derive(Deserialize)]

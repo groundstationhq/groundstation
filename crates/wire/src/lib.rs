@@ -266,6 +266,20 @@ pub struct NewToken {
     pub label: String,
 }
 
+/// Where `groundstation cloud login` asks a backend for [`Endpoints`], before
+/// it connects a computer. Answered without sign-in.
+pub const ENDPOINTS_PATH: &str = "/auth/cli/endpoints";
+
+/// The addresses a computer needs to connect to a hosted backend
+/// ([`ENDPOINTS_PATH`]). Hosted only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Endpoints {
+    /// Where `gsd` uploads (`transport.endpoint`): the origin that takes
+    /// `POST /v1/events`. The address people sign in at, unless uploads have
+    /// one of their own.
+    pub upload: String,
+}
+
 /// The answer to `POST /v1/tokens`: the token's only appearance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatedToken {
