@@ -198,6 +198,8 @@ Deleting a tenant in Postgres (`DELETE FROM tenants WHERE id = '<tenant>'`) remo
 
 Upgrading is a new image: the api migrates on start. Nothing calls home.
 
+Compose builds the image from the `Dockerfile`. Every release also publishes it, for amd64 and arm64, as `ghcr.io/groundstationhq/groundstation-server:X.Y.Z` (and `latest`), which is what the Helm chart runs.
+
 ### On Kubernetes
 
 [`infra/helm/groundstation`](../infra/helm/groundstation) is a Helm chart for the same stack: the three services, the edge with the same Caddyfile, and ClickHouse and Postgres set up by the same scripts, or your own databases in their place. It generates the passwords and keeps them, gives each service only its own, and is exposed through the edge's Service or an Ingress. Its `README.md` says how to install it.

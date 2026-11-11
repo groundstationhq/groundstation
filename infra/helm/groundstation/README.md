@@ -22,7 +22,7 @@ helm install groundstation infra/helm/groundstation \
   --namespace groundstation --create-namespace
 ```
 
-That runs the published image, `ghcr.io/groundstationhq/groundstation-server`, which is public and built for amd64 and arm64. To run your own build instead, push it where your cluster pulls from and set `image.repository` and `image.tag`:
+That runs the published image, `ghcr.io/groundstationhq/groundstation-server`, which is public and built for amd64 and arm64. Every release publishes one under its version, and the chart at that release installs it. To run your own build instead, push it where your cluster pulls from and set `image.repository` and `image.tag`:
 
 ```sh
 docker buildx build --platform linux/amd64,linux/arm64 --tag registry.example.com/groundstation-server:dev --push .
@@ -154,7 +154,7 @@ Put their passwords under `secrets` (or in your own Secret). ClickHouse needs th
 
 ## Upgrading and removing
 
-Upgrading is a new image: `helm upgrade` with the new `image.tag`, and the api migrates when it starts.
+Upgrading is a new image, and the api migrates when it starts. The chart at each release installs that release's image, so check out the release and `helm upgrade`; or stay on the chart you have and set `image.tag`.
 
 ```sh
 helm uninstall groundstation --namespace groundstation

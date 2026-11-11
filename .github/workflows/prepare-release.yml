@@ -1,9 +1,10 @@
 name: Prepare release
 
-# Run this from the Actions tab. It bumps the workspace version, regenerates
-# CHANGELOG.md, commits "Release vX.Y.Z", tags it, and dispatches the Release
-# workflow, which builds the binaries and publishes the GitHub Release with
-# that version's changelog section as the notes.
+# Run this from the Actions tab. It bumps the workspace version and the Helm
+# chart's, regenerates CHANGELOG.md, commits "Release vX.Y.Z", tags it, and
+# dispatches the Release workflow, which builds the binaries and the backend's
+# image and publishes the GitHub Release with that version's changelog section
+# as the notes.
 
 on:
   workflow_dispatch:
@@ -58,6 +59,11 @@ jobs:
           sed -i "0,/^version = \"${{ steps.v.outputs.current }}\"/s//version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
           grep -m1 '^version' Cargo.toml
           cargo update --workspace --offline 2>/dev/null || cargo update --workspace
+          # The chart is released with the backend: it carries the same
+          # version and installs that version's image.
+          chart=infra/helm/groundstation/Chart.yaml
+          sed -i -e "s/^version: .*/version: ${{ steps.v.outputs.next }}/" -e "s/^appVersion: .*/appVersion: \"${{ steps.v.outputs.next }}\"/" "$chart"
+          grep -E '^(version|appVersion):' "$chart"
           git diff --stat
 
       - name: Regenerate CHANGELOG.md
@@ -68,7 +74,7 @@ jobs:
           set -eu
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md infra/helm/groundstation/Chart.yaml
           git commit -m "Release v${{ steps.v.outputs.next }}"
           git tag -a "v${{ steps.v.outputs.next }}" -m "v${{ steps.v.outputs.next }}"
           git push origin HEAD:main "v${{ steps.v.outputs.next }}"
@@ -85,5 +91,5 @@ jobs:
             echo "## Release v${{ steps.v.outputs.next }} prepared"
             echo
             echo "Tagged \`v${{ steps.v.outputs.next }}\` and started the Release workflow."
-            echo "Follow it under Actions → Release. The GitHub Release appears when all four targets have built."
+            echo "Follow it under Actions → Release. The GitHub Release appears when all four targets have built, and the backend's image when both architectures have."
           } >> "$GITHUB_STEP_SUMMARY"
