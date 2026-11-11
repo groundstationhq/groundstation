@@ -4,10 +4,10 @@ description: "Ground Station's backend on Kubernetes: ingest, api (with the UI),
 type: application
 # The chart is released with the backend and carries its version: "Prepare
 # release" sets both of these.
-version: 0.1.2
+version: 0.2.0
 # The image tag installed by default: the release's own. Until the first
 # release that publishes an image, the last one pushed by hand.
-appVersion: "0.0.1-alpha.2"
+appVersion: "0.2.0"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/groundstationhq/groundstation
 sources:

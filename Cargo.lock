@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1100,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-claude-code"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-codex"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-opencode"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-adapter-pi"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-api"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-backend"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-hooks-json"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-ingest"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-schema"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-ui-embed"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-wire"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "groundstation-schema",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "groundstation-worker"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "gsd"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
