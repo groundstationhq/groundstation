@@ -21,6 +21,8 @@ What `gsd` uploads to when `transport.mode = "cloud"`: three services in this re
 - **worker** (`crates/worker`) runs the detectors over each tenant's recent events and stores findings.
 - **edge** routes `POST /v1/events` to ingest and everything else to api, so the UI and `gsd` see one origin. Locally it's Caddy (`docker/caddy/Caddyfile`).
 
+Ingest can also have an origin of its own, so that uploads and the web are scaled, limited and taken down separately: route `POST /v1/events` at that origin to ingest, and set `GROUNDSTATION_INGEST_URL` on the api. People still give `groundstation cloud login` the address they sign in at. The CLI asks the api where uploads go (`GET /auth/cli/endpoints`, no sign-in) before it says what will leave the computer, and saves that address as `transport.endpoint`. A backend that doesn't answer takes uploads where it is.
+
 Shared code lives in `crates/backend` (storage, configuration, startup), `crates/wire` (the HTTP types the UI and CLI also use) and `crates/ui-embed` (the embedded UI `gsd` serves too).
 
 ## Running it locally
@@ -136,6 +138,7 @@ Environment variables only (every one is also a flag; `--help` lists them).
 | `GROUNDSTATION_INGEST_DECODING` | ingest | 16 batches inflated, parsed and stored at once, and 64 held |
 | `GROUNDSTATION_API_LISTEN` | api | `127.0.0.1:4321` |
 | `GROUNDSTATION_PUBLIC_URL` | api | `http://127.0.0.1:4321`; an origin only (scheme, host, optional port): Ground Station is served at the root |
+| `GROUNDSTATION_INGEST_URL` | api | none: uploads go to the public URL, through the edge. Set it when ingest has an origin of its own; the api tells `groundstation cloud login` to upload there |
 | `GROUNDSTATION_CLICKHOUSE_ADMIN_USER`, `_ADMIN_PASSWORD` | api | `groundstation` / `groundstation`; used only to migrate |
 | `GROUNDSTATION_ADMIN_PASSWORD`, `GROUNDSTATION_OIDC_*` | api | none: set at least one |
 | `GROUNDSTATION_NEW_USERS` | api | `personal` |

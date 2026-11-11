@@ -192,9 +192,39 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use clap::Parser;
+    use groundstation_wire::{ENDPOINTS_PATH, Endpoints};
+    use http_body_util::BodyExt;
     use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn anyone_can_ask_where_uploads_go() {
+        let own: &[&str] = &["--ingest-url", "https://ingest.example.com"];
+        for (flags, upload) in [
+            (&[][..], "https://app.example.com"),
+            (own, "https://ingest.example.com"),
+        ] {
+            let args = ["api", "--public-url", "https://app.example.com"];
+            let sign_in = ["--admin-password", "a long enough password"];
+            let config = Config::parse_from(args.iter().chain(&sign_in).chain(flags));
+            let app = router(AppState::new(config).unwrap());
+            // No session, no database: it's the same answer for everyone.
+            let asked = Request::get(ENDPOINTS_PATH).body(Body::empty()).unwrap();
+            let answer = tower::ServiceExt::oneshot(app, asked).await.unwrap();
+            assert_eq!(answer.status(), StatusCode::OK);
+            let body = answer.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<Endpoints>(&body).unwrap(),
+                Endpoints {
+                    upload: upload.into()
+                }
+            );
+        }
+    }
 
     #[test]
     fn turns_a_request_holds_are_never_forgotten() {

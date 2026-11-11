@@ -23,6 +23,12 @@ pub struct Config {
         default_value = "http://127.0.0.1:4321"
     )]
     pub public_url: String,
+    /// Where gsd uploads, when uploads have an origin of their own: the one
+    /// that sends `POST /v1/events` to ingest. `groundstation cloud login`
+    /// asks for it. [default: the public URL, behind an edge that routes
+    /// uploads to ingest]
+    #[arg(long, env = "GROUNDSTATION_INGEST_URL")]
+    pub ingest_url: Option<String>,
     #[command(flatten)]
     pub clickhouse: ClickhouseArgs,
     #[command(flatten)]
@@ -117,8 +123,19 @@ impl Config {
         &self.public_url
     }
 
+    /// The origin gsd uploads to: ingest's own, or the public one.
+    pub fn upload_origin(&self) -> &str {
+        self.ingest_url.as_deref().unwrap_or(&self.public_url)
+    }
+
     pub fn check(&mut self) -> anyhow::Result<()> {
-        self.public_url = origin_of(&self.public_url)?;
+        self.public_url = origin_of("GROUNDSTATION_PUBLIC_URL", &self.public_url)?;
+        // Empty counts as unset, as for sign-in: `VAR=` is how compose files
+        // and secret stores say "not configured".
+        self.ingest_url = match self.ingest_url.take().filter(|url| !url.trim().is_empty()) {
+            Some(url) => Some(origin_of("GROUNDSTATION_INGEST_URL", &url)?),
+            None => None,
+        };
         if !(1..=400).contains(&self.session_days) {
             anyhow::bail!(
                 "GROUNDSTATION_SESSION_DAYS must be 1 to 400: browsers keep cookies 400 days at most"
@@ -161,8 +178,8 @@ impl Config {
 /// `url` as an origin, the way browsers write it in `Origin`: lowercase
 /// scheme and host, no default port, no trailing slash. Ground Station is
 /// served at the root of its own origin, so anything after it is refused.
-fn origin_of(url: &str) -> anyhow::Result<String> {
-    let refuse = |why: &str| anyhow::anyhow!("GROUNDSTATION_PUBLIC_URL {url:?}: {why}");
+fn origin_of(setting: &str, url: &str) -> anyhow::Result<String> {
+    let refuse = |why: &str| anyhow::anyhow!("{setting} {url:?}: {why}");
     let parsed = reqwest::Url::parse(url).map_err(|e| refuse(&e.to_string()))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
         return Err(refuse("must be an http:// or https:// URL"));
@@ -231,6 +248,36 @@ mod tests {
         ]);
         https.check().unwrap();
         assert!(https.https());
+    }
+
+    #[test]
+    fn uploads_go_to_the_public_url_unless_ingest_has_its_own() {
+        let with = |ingest: Option<&str>| {
+            let mut args = vec![
+                "api",
+                "--public-url",
+                "https://app.example.com",
+                "--admin-password",
+                "a long password",
+            ];
+            if let Some(url) = ingest {
+                args.extend(["--ingest-url", url]);
+            }
+            let mut config = Config::parse_from(args);
+            config.check().map(|()| config.upload_origin().to_string())
+        };
+        assert_eq!(with(None).unwrap(), "https://app.example.com");
+        // Set to nothing, as a compose file passes a variable it has no value for.
+        assert_eq!(with(Some(" ")).unwrap(), "https://app.example.com");
+        assert_eq!(
+            with(Some("https://Ingest.example.com/")).unwrap(),
+            "https://ingest.example.com"
+        );
+        let refused = with(Some("https://ingest.example.com/v1/events")).unwrap_err();
+        assert!(
+            refused.to_string().contains("GROUNDSTATION_INGEST_URL"),
+            "{refused}"
+        );
     }
 
     #[test]

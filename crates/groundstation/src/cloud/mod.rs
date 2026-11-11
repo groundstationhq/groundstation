@@ -37,8 +37,11 @@ pub struct Login<'a> {
 /// Says what will be uploaded, gets a token (through the browser, or pasted),
 /// writes it to `config.toml`. Returns false if nothing changed.
 pub async fn login(config: &Config, config_path: &Path, login: Login<'_>) -> Result<bool> {
+    // The address people sign in at, which is the one they know. Where gsd
+    // uploads is the backend's to say, before anything is agreed to.
     let endpoint = login.endpoint.trim_end_matches('/');
     gsd::config::check_endpoint(endpoint)?;
+    let upload = &upload_endpoint(endpoint).await?;
     let label = login.label.clone().unwrap_or_else(default_label);
     if !groundstation_wire::valid_token_label(&label) {
         bail!(
@@ -49,20 +52,17 @@ pub async fn login(config: &Config, config_path: &Path, login: Login<'_>) -> Res
     // Whatever would keep the token from being saved fails now, before one
     // exists.
     let text = config_file::read(config_path)?;
-    config_file::connect(&text, endpoint, "placeholder")?;
+    config_file::connect(&text, upload, "placeholder")?;
     config_file::check_writable(config_path)?;
     let current = config_file::current(&text)?;
     if current.cloud {
         let at = current.endpoint.as_deref().unwrap_or("a backend");
         println!(
             "This computer uploads to {at} now. Connecting again replaces its token, which keeps \
-             working until you revoke it on {at}'s Tokens page.\n"
+             working until you revoke it on that backend's Tokens page.\n"
         );
     }
-    println!(
-        "{}\n",
-        disclosure::describe(config, endpoint, login.pending)?
-    );
+    println!("{}\n", disclosure::describe(config, upload, login.pending)?);
     if !login.yes && !confirm("Upload to this backend?")? {
         println!("Not connected.");
         return Ok(false);
@@ -70,8 +70,8 @@ pub async fn login(config: &Config, config_path: &Path, login: Login<'_>) -> Res
 
     if login.token_stdin {
         let token = read_token(endpoint)?;
-        check_token(endpoint, &token).await?;
-        let written = save(config_path, endpoint, &token)?;
+        check_token(upload, &token).await?;
+        let written = save(config_path, upload, &token)?;
         println!(
             "Connected. Token saved to {}.",
             shown(config_path, &written)
@@ -130,7 +130,7 @@ pub async fn login(config: &Config, config_path: &Path, login: Login<'_>) -> Res
         collected.approved_by.as_deref().unwrap_or("someone")
     );
     // The api approves at any address it answers on; uploads need ingest's.
-    if let Err(e) = check_token(endpoint, &collected.token).await {
+    if let Err(e) = check_token(upload, &collected.token).await {
         callback
             .answer("Not connected: the terminal says why.")
             .await;
@@ -154,7 +154,7 @@ pub async fn login(config: &Config, config_path: &Path, login: Login<'_>) -> Res
             return Ok(false);
         }
     }
-    let written = match save(config_path, endpoint, &collected.token) {
+    let written = match save(config_path, upload, &collected.token) {
         Ok(written) => written,
         Err(e) => {
             if let Some(callback) = callback {
@@ -237,6 +237,37 @@ async fn collect(endpoint: &str, code: &str, verifier: &str) -> Result<Collected
         .with_context(|| format!("{endpoint} answered, but not with a token"))
 }
 
+/// Where the backend people sign in to at `endpoint` takes uploads. It says
+/// (`GET /auth/cli/endpoints`) when ingest has an address of its own. One
+/// that doesn't answer takes them where it is: a backend behind one edge
+/// from before it could say, or `endpoint` being ingest's address already.
+async fn upload_endpoint(endpoint: &str) -> Result<String> {
+    let asked = http()?
+        .get(format!("{endpoint}{}", groundstation_wire::ENDPOINTS_PATH))
+        .send()
+        .await;
+    let asked = match asked {
+        Ok(asked) if asked.status().is_success() => asked,
+        Ok(_) => return Ok(endpoint.to_string()),
+        // As for a token that can't be checked: a backend that is down now
+        // isn't a reason to refuse a token pasted for it.
+        Err(e) => {
+            println!(
+                "Couldn't ask {endpoint} where it takes uploads ({e}); taking it to be there."
+            );
+            return Ok(endpoint.to_string());
+        }
+    };
+    // A page from something in between (a sign-in proxy) is no answer either.
+    let Ok(said) = asked.json::<groundstation_wire::Endpoints>().await else {
+        return Ok(endpoint.to_string());
+    };
+    let upload = said.upload.trim_end_matches('/');
+    gsd::config::check_endpoint(upload)
+        .with_context(|| format!("{endpoint} takes uploads at an address gsd won't use"))?;
+    Ok(upload.to_string())
+}
+
 /// Asks the backend whether it takes `token`, with an empty batch, so a
 /// mistyped or revoked token is caught here and not in failing uploads.
 async fn check_token(endpoint: &str, token: &str) -> Result<()> {
@@ -254,9 +285,10 @@ async fn check_token(endpoint: &str, token: &str) -> Result<()> {
             // The api, not ingest, answered: the endpoint is wrong, not the token.
             if reason == groundstation_wire::CROSS_ORIGIN_REFUSED {
                 bail!(
-                    "{endpoint} is Ground Station's api, which doesn't take uploads: give \
-                     --endpoint the address that sends POST /v1/events to ingest (the edge in \
-                     front of both)"
+                    "{endpoint} is Ground Station's api, which doesn't take uploads, and it \
+                     names no other address for them. Whoever runs it: put the edge in front \
+                     of api and ingest, or set GROUNDSTATION_INGEST_URL to the address that \
+                     sends POST /v1/events to ingest"
                 );
             }
             bail!("{endpoint} doesn't take that token: {reason}")
@@ -496,6 +528,29 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn uploads_go_where_the_backend_says() {
+        // Ingest with an address of its own.
+        let split = answering_with("200 OK", r#"{"upload":"https://ingest.example.com/"}"#).await;
+        assert_eq!(
+            upload_endpoint(&split).await.unwrap(),
+            "https://ingest.example.com"
+        );
+        // A backend that doesn't say takes them where it is: one from before
+        // it could, ingest itself, a sign-in proxy's page, one that is down.
+        for same in [
+            answering("404 Not Found").await,
+            answering_with("200 OK", "<html>sign in</html>").await,
+            "http://127.0.0.1:9".to_string(),
+        ] {
+            assert_eq!(upload_endpoint(&same).await.unwrap(), same);
+        }
+        // gsd won't upload unencrypted, whoever says to.
+        let plain = answering_with("200 OK", r#"{"upload":"http://ingest.example.com"}"#).await;
+        let e = format!("{:#}", upload_endpoint(&plain).await.unwrap_err());
+        assert!(e.contains("must use https://"), "{e}");
     }
 
     #[tokio::test]
