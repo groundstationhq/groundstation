@@ -16,10 +16,10 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 clickhouse = { version = "0.13.3", default-features = false, features = ["chrono", "uuid"] }
 deadpool-postgres = "0.14.2"
 futures-util = "0.3.34"
-groundstation-backend = { version = "0.1.2", path = "../backend" }
-groundstation-schema = { version = "0.1.2", path = "../schema" }
-groundstation-ui-embed = { version = "0.1.2", path = "../ui-embed" }
-groundstation-wire = { version = "0.1.2", path = "../wire" }
+groundstation-backend = { workspace = true }
+groundstation-schema = { workspace = true }
+groundstation-ui-embed = { workspace = true }
+groundstation-wire = { workspace = true }
 hex = "0.4.3"
 openidconnect = { version = "4.0.1", default-features = false }
 percent-encoding = "2.3.2"

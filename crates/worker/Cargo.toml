@@ -13,9 +13,9 @@ anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clickhouse = { version = "0.13.3", default-features = false, features = ["chrono", "uuid"] }
-groundstation-backend = { version = "0.1.2", path = "../backend" }
-groundstation-schema = { version = "0.1.2", path = "../schema" }
-groundstation-wire = { version = "0.1.2", path = "../wire" }
+groundstation-backend = { workspace = true }
+groundstation-schema = { workspace = true }
+groundstation-wire = { workspace = true }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 tracing = "0.1.44"

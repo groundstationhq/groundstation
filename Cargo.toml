@@ -10,6 +10,21 @@ license = "Apache-2.0"
 repository = "https://github.com/groundstationhq/groundstation"
 homepage = "https://groundstation.sh"
 
+# The workspace's own crates, for each other: `name = { workspace = true }`
+# in a crate's manifest. They are published, so each needs a version here as
+# well as a path; "Prepare release" keeps these on the workspace's version.
+[workspace.dependencies]
+groundstation-adapter-claude-code = { version = "0.1.2", path = "adapters/claude-code" }
+groundstation-adapter-codex = { version = "0.1.2", path = "adapters/codex" }
+groundstation-adapter-opencode = { version = "0.1.2", path = "adapters/opencode" }
+groundstation-adapter-pi = { version = "0.1.2", path = "adapters/pi" }
+groundstation-backend = { version = "0.1.2", path = "crates/backend" }
+groundstation-hooks-json = { version = "0.1.2", path = "crates/hooks-json" }
+groundstation-schema = { version = "0.1.2", path = "crates/schema" }
+groundstation-ui-embed = { version = "0.1.2", path = "crates/ui-embed" }
+groundstation-wire = { version = "0.1.2", path = "crates/wire" }
+gsd = { version = "0.1.2", path = "crates/gsd" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

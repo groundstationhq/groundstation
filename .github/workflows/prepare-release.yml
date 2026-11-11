@@ -58,10 +58,14 @@ jobs:
           set -eu
           sed -i "0,/^version = \"${{ steps.v.outputs.current }}\"/s//version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
           grep -m1 '^version' Cargo.toml
-          # The crates require each other by version too. A patch release
-          # satisfies the old requirement; a minor or major one doesn't, and
-          # cargo then refuses to resolve the workspace.
-          sed -i -E "s/(\{ version = \")[^\"]+(\", path = \")/\1${{ steps.v.outputs.next }}\2/" crates/*/Cargo.toml adapters/*/Cargo.toml
+          # The workspace's crates require each other by version, and those
+          # requirements are in the same file ([workspace.dependencies]): the
+          # lines with a path. A patch release would satisfy the old ones; a
+          # minor or major one doesn't.
+          sed -i -E "/path = \"/ s/version = \"[^\"]+\"/version = \"${{ steps.v.outputs.next }}\"/" Cargo.toml
+          if grep 'path = "' Cargo.toml | grep -v "version = \"${{ steps.v.outputs.next }}\""; then
+            echo "these workspace crates aren't on ${{ steps.v.outputs.next }}" >&2; exit 1
+          fi
           cargo update --workspace --offline 2>/dev/null || cargo update --workspace
           # The chart is released with the backend: it carries the same
           # version and installs that version's image.
@@ -78,7 +82,7 @@ jobs:
           set -eu
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md crates/*/Cargo.toml adapters/*/Cargo.toml infra/helm/groundstation/Chart.yaml
+          git add Cargo.toml Cargo.lock CHANGELOG.md infra/helm/groundstation/Chart.yaml
           git commit -m "Release v${{ steps.v.outputs.next }}"
           git tag -a "v${{ steps.v.outputs.next }}" -m "v${{ steps.v.outputs.next }}"
           git push origin HEAD:main "v${{ steps.v.outputs.next }}"

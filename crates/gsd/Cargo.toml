@@ -15,13 +15,13 @@ chrono = { version = "0.4.45", default-features = false, features = ["serde", "c
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.10"
 gethostname = "1.1.0"
-groundstation-adapter-claude-code = { version = "0.1.0", path = "../../adapters/claude-code" }
-groundstation-adapter-codex = { version = "0.1.0", path = "../../adapters/codex" }
-groundstation-adapter-opencode = { version = "0.1.0", path = "../../adapters/opencode" }
-groundstation-adapter-pi = { version = "0.1.0", path = "../../adapters/pi" }
-groundstation-wire = { version = "0.1.0", path = "../wire" }
-groundstation-schema = { version = "0.1.0", path = "../schema" }
-groundstation-ui-embed = { version = "0.1.2", path = "../ui-embed" }
+groundstation-adapter-claude-code = { workspace = true }
+groundstation-adapter-codex = { workspace = true }
+groundstation-adapter-opencode = { workspace = true }
+groundstation-adapter-pi = { workspace = true }
+groundstation-wire = { workspace = true }
+groundstation-schema = { workspace = true }
+groundstation-ui-embed = { workspace = true }
 hex = "0.4.3"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }

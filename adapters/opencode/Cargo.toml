@@ -11,8 +11,8 @@ homepage.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock", "std"] }
-groundstation-hooks-json = { version = "0.1.0", path = "../../crates/hooks-json" }
-groundstation-schema = { version = "0.1.0", path = "../../crates/schema" }
+groundstation-hooks-json = { workspace = true }
+groundstation-schema = { workspace = true }
 serde_json = "1.0.151"
 uuid = { version = "1.26.1", features = ["v5"] }
 
