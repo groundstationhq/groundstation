@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && mkdir /out \
     && cp target/release/groundstation-ingest target/release/groundstation-api target/release/groundstation-worker /out/
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab
 COPY --from=build /out/ /usr/local/bin/
 COPY LICENSE NOTICE /usr/share/doc/groundstation/
 ENV GROUNDSTATION_INGEST_LISTEN=0.0.0.0:4320 \
